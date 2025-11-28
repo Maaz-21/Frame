@@ -1,4 +1,6 @@
 /* Landing Page */
+/* classes.css is imported globally from index.css */
+
 .landingPageContainer{
   width: 100vw;
   height: 100vh;
@@ -128,32 +130,4 @@
 }
 
 /* Meeting Page */
-.home-root {
-  display: flex;
-  height: calc(100vh - 64px); /* minus navbar */
-  background-color: #f5f7fa;
-}
-
-.left-panel,
-.right-panel {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-}
-
-.left-panel {
-  flex-direction: column;
-  background: linear-gradient(135deg, #e3f2fd, #ffffff);
-}
-
-.right-panel {
-  background: #fff;
-}
-
-.responsive-image {
-  max-width: 100%;
-  height: auto;
-  object-fit: contain;
-}
+/* Meeting Page styles moved to Tailwind component layer (`classes.css`) */

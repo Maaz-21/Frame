@@ -1,14 +1,8 @@
+
 import React, { useContext, useEffect, useState } from 'react'
 import { AuthContext } from '../contexts/AuthContext'
 import { useNavigate } from 'react-router-dom';
-import Card from '@mui/material/Card';
-import Box from '@mui/material/Box';
-import CardContent from '@mui/material/CardContent';
-import Typography from '@mui/material/Typography';
-import HomeIcon from '@mui/icons-material/Home';
-import Grid from '@mui/material/Grid';
 
-import { IconButton } from '@mui/material';
 export default function History() {
 
 
@@ -45,47 +39,24 @@ export default function History() {
     }
 
     return (
-    <Box sx={{ minHeight: '100vh', p: 4 }}>
-      <Box display="flex" alignItems="center" mb={4}>
-        <IconButton
-          onClick={() => routeTo("/home")}
-          sx={{  mr: 2 }}
-        >
-          <HomeIcon />
-        </IconButton>
-        <Typography variant="h5">Meeting History</Typography>
-      </Box>
+        <div className="p-6 min-h-screen">
+            <div className="flex items-center align-middle mb-6 gap-4">
+                <button className="nav-btn text-white" onClick={() => routeTo('/home')}>Back</button>
+                <h2 className="text-2xl font-semibold text-slate-400">Meeting History</h2>
+            </div>
 
-      {meetings.length > 0 ? (
-        <Grid container spacing={2}>
-          {meetings.map((e, i) => (
-            <Grid item xs={12} sm={6} md={4} key={`${e.meetingCode}-${i}`}>
-              <Card
-                variant="outlined"
-                sx={{
-                  backgroundColor: '#1a1a1a',
-                  color: 'white',
-                  borderColor: '#333',
-                  '&:hover': {
-                    borderColor: '#1976d2',
-                  },
-                }}
-              >
-                <CardContent>
-                  <Typography variant="subtitle1" gutterBottom>
-                    <strong>Code:</strong> {e.meetingCode}
-                  </Typography>
-                  <Typography variant="body2">
-                    <strong>Date:</strong> {formatDate(e.date)}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
-      ) : (
-        <Typography>No meeting history found.</Typography>
-      )}
-    </Box>
-  );
+            {meetings.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                    {meetings.map((e, i) => (
+                        <div key={`${e.meetingCode}-${i}`} className="p-4 rounded-lg border border-white/10 bg-black/40">
+                            <div className="text-sm text-white/80"><strong>Code:</strong> {e.meetingCode}</div>
+                            <div className="text-xs text-white/60 mt-2"><strong>Date:</strong> {formatDate(e.date)}</div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="text-white/60">No meeting history found.</div>
+            )}
+        </div>
+    );
 }

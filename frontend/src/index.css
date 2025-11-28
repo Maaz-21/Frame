@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@import "./styles/classes.tailwind.css";
 *{
   margin: 0;
   padding: 0;

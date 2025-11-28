@@ -21,6 +21,7 @@ app.use('/api/users', userRoutes);
 const start = async()=>{
     // Connect to MongoDB
     try{
+        console.log(process.env.MONGO_URL);
         const connectDb =await mongoose.connect(process.env.MONGO_URL);
         console.log('Connected to MongoDB:','Host: ', connectDb.connection.host, 'Name: ',connectDb.connection.name);
     }catch(err){

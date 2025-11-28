@@ -1,17 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
 import io from "socket.io-client";
-import { Badge, IconButton, TextField } from '@mui/material';
-import { Button } from '@mui/material';
-import VideocamIcon from '@mui/icons-material/Videocam';
-import VideocamOffIcon from '@mui/icons-material/VideocamOff'
-import styles from "../styles/VideoComponent.module.css";
-import CallEndIcon from '@mui/icons-material/CallEnd'
-import MicIcon from '@mui/icons-material/Mic'
-import MicOffIcon from '@mui/icons-material/MicOff'
-import ScreenShareIcon from '@mui/icons-material/ScreenShare';
-import StopScreenShareIcon from '@mui/icons-material/StopScreenShare'
-import ChatIcon from '@mui/icons-material/Chat'
-import Typography from '@mui/material/Typography';
 import server from '../environment';
 
 const server_url = server;
@@ -58,6 +46,12 @@ export default function VideoMeetComponent() {
     const videoRef = useRef([])
 
     let [videos, setVideos] = useState([])
+
+    // Resizer & responsive layout state
+    const containerRef = useRef();
+    const chatRef = useRef();
+    const isDraggingRef = useRef(false);
+    const [chatWidth, setChatWidth] = useState(320);
 
     // TODO
     // if(isChrome() === false) {
@@ -446,134 +440,137 @@ export default function VideoMeetComponent() {
         getMedia();
     }
 
+    // Drag handlers for resizer
+    const startDrag = (e) => {
+        e.preventDefault();
+        isDraggingRef.current = true;
+        document.addEventListener('mousemove', onDrag);
+        document.addEventListener('mouseup', stopDrag);
+        document.addEventListener('touchmove', onDrag);
+        document.addEventListener('touchend', stopDrag);
+    };
+
+    const onDrag = (e) => {
+        if (!isDraggingRef.current) return;
+        const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        let newWidth = Math.min(Math.max(clientX - rect.left, 200), 800); // constrain
+        setChatWidth(newWidth);
+    };
+
+    const stopDrag = () => {
+        isDraggingRef.current = false;
+        document.removeEventListener('mousemove', onDrag);
+        document.removeEventListener('mouseup', stopDrag);
+        document.removeEventListener('touchmove', onDrag);
+        document.removeEventListener('touchend', stopDrag);
+    };
+
+    useEffect(() => {
+        return () => {
+            // cleanup
+            stopDrag();
+        };
+    }, []);
+
 
     return (
-        <div>
+        <div> <h1>{screenAvailable}</h1>
+                    {askForUsername === true ?
+                        <div className="p-6">
+                            <h2 className="text-xl text-white mb-3">Enter Lobby</h2>
+                            <input id="username" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} className="p-2 rounded bg-black/30 border border-white/10 text-white mb-3 w-full" />
+                            <button className="cta-dark mb-4" onClick={connect}>Connect</button>
 
-            {askForUsername === true ?
-                <div>
-                    <h2>Enter into Lobby </h2>
-                    <TextField id="outlined-basic" label="Username" value={username} onChange={e => setUsername(e.target.value)} variant="outlined" />
-                    <Button variant="contained" onClick={connect}>Connect</Button>
-
-
-                    <div>
-                        <video ref={localVideoref} autoPlay muted></video>
-                    </div>
-
-                </div> :
+                            <div>
+                                <video ref={localVideoref} autoPlay muted className="w-64 h-48 bg-black" ></video>
+                            </div>
+                        </div> :
 
 
-                <div className={styles.meetVideoContainer}>
+                <div className="meetVideoContainer" ref={containerRef}>
+                    <div className="flex h-[calc(100vh-64px)]">
+                        {showModal ? (
+                            <div className="chatRoom" ref={chatRef} style={{ width: chatWidth }}>
+                                <div className="chatContainer">
+                                    <h1 className="text-lg font-semibold">Chat</h1>
 
-                    {showModal ? <div className={styles.chatRoom}>
+                                    <div className="chattingDisplay">
+                                        {messages.length !== 0 ? messages.map((item, index) => {
+                                            return (
+                                                <div style={{ marginBottom: "12px", wordBreak: "break-word" }} key={index}>
+                                                    <div className="text-sm text-white/80">{item.sender}</div>
+                                                    <div className="text-sm text-white/60">{item.data}</div>
+                                                </div>
+                                            )
+                                        }) : <p className="text-white/60">No Messages Yet</p>}
+                                    </div>
 
-                        <div className={styles.chatContainer}>
-                            <h1>Chat</h1>
-
-                            <div className={styles.chattingDisplay}>
-
-                                {messages.length !== 0 ? messages.map((item, index) => {
-
-                                    console.log(messages)
-                                    return (
-                                        <div style={{ marginBottom: "20px", wordBreak: "break-word" }} key={index}>
-                                            <Typography variant="subtitle2" color="primary">{item.sender}</Typography>
-                                            <Typography variant="body2">{item.data}</Typography>
-                                        </div>
-                                    )
-                                }) : <p>No Messages Yet</p>}
+                                    <div className="chattingArea">
+                                        <input
+                                            value={message}
+                                            onChange={(e) => setMessage(e.target.value)}
+                                            placeholder="Enter your chat"
+                                            className="w-full p-2 bg-black/20 rounded border border-white/10 text-white"
+                                        />
+                                        <button className="cta-dark" onClick={sendMessage}>Send</button>
+                                    </div>
 
 
+                                </div>
+                            </div>
+                        ) : null}
+
+                        {/* resizer */}
+                        <div
+                            className={`resizer ${isDraggingRef.current ? 'dragging' : ''}`}
+                            onMouseDown={startDrag}
+                            onTouchStart={startDrag}
+                        />
+
+                        <div className="videoPane flex-1 relative">
+                            <div className="buttonContainers">
+                                <button title="Toggle video" onClick={handleVideo} className="p-2 rounded-full bg-white/10 text-white" aria-pressed={video === true}>{video === true ? '🎥' : '📵'}</button>
+                                <button title="End call" onClick={handleEndCall} className="p-2 rounded-full text-white" style={{ background: 'rgba(255,0,0,0.08)' }}>🔴</button>
+                                <button title="Toggle audio" onClick={handleAudio} className="p-2 rounded-full bg-white/10 text-white" aria-pressed={audio === true}>{audio === true ? '🎙️' : '🔇'}</button>
+
+                                {screenAvailable === true ? (
+                                    <button title="Share screen" onClick={handleScreen} className="p-2 rounded-full bg-white/10 text-white">{screenAvailable === true ? '🖥️' : '🛑'}</button>
+                                ) : null}
+
+                                <div className="relative">
+                                    <button title="Toggle chat" onClick={() => setModal(!showModal)} className="p-2 rounded-full bg-white/10 text-white">💬</button>
+                                    {newMessages > 0 && (
+                                        <span className="absolute -top-2 -right-2 bg-orange-500 text-xs text-black rounded-full px-1">{newMessages}</span>
+                                    )}
+                                </div>
                             </div>
 
-                            <div className={styles.chattingArea}>
-                                <TextField
-                                    value={message}
-                                    onChange={(e) => setMessage(e.target.value)}
-                                    label="Enter Your chat"
-                                    variant="outlined"
-                                    fullWidth
-                                    InputProps={{
-                                        style: {
-                                        color: 'white',
-                                        }
-                                    }}
-                                    InputLabelProps={{
-                                        style: {
-                                        color: '#90caf9', // light blue
-                                        }
-                                    }}
-                                    sx={{
-                                        '& .MuiOutlinedInput-root': {
-                                        '& fieldset': {
-                                            borderColor: '#1976d2', // primary blue
-                                        },
-                                        '&:hover fieldset': {
-                                            borderColor: '#64b5f6',
-                                        },
-                                        '&.Mui-focused fieldset': {
-                                            borderColor: '#1976d2',
-                                        },
-                                        },
-                                        backgroundColor: '#121212', // dark background
-                                        borderRadius: '6px',
-                                    }}
-                                    />
-                                <Button variant='contained' onClick={sendMessage}>Send</Button>
+                            <video className="meetUserVideo" ref={localVideoref} autoPlay muted></video>
+
+                            <div className="conferenceView">
+                                {videos.map((video) => (
+                                    <div key={video.socketId}>
+                                        <video
+
+                                            data-socket={video.socketId}
+                                            ref={ref => {
+                                                if (ref && video.stream) {
+                                                    ref.srcObject = video.stream;
+                                                }
+                                            }}
+                                            autoPlay
+                                        >
+                                        </video>
+                                    </div>
+
+                                ))}
+
                             </div>
-
-
                         </div>
-                    </div> : <></>}
-
-
-                    <div className={styles.buttonContainers}>
-                        <IconButton onClick={handleVideo} style={{ color: "white" }}>
-                            {(video === true) ? <VideocamIcon /> : <VideocamOffIcon />}
-                        </IconButton>
-                        <IconButton onClick={handleEndCall} style={{ color: "red" }}>
-                            <CallEndIcon  />
-                        </IconButton>
-                        <IconButton onClick={handleAudio} style={{ color: "white" }}>
-                            {audio === true ? <MicIcon /> : <MicOffIcon />}
-                        </IconButton>
-
-                        {screenAvailable === true ?
-                            <IconButton onClick={handleScreen} style={{ color: "white" }}>
-                                {screen === true ? <ScreenShareIcon /> : <StopScreenShareIcon />}
-                            </IconButton> : <></>}
-
-                        <Badge badgeContent={newMessages} max={999} color='orange'>
-                            <IconButton onClick={() => setModal(!showModal)} style={{ color: "white" }}>
-                                <ChatIcon />                        </IconButton>
-                        </Badge>
-
                     </div>
-
-
-                    <video className={styles.meetUserVideo} ref={localVideoref} autoPlay muted></video>
-
-                    <div className={styles.conferenceView}>
-                        {videos.map((video) => (
-                            <div key={video.socketId}>
-                                <video
-
-                                    data-socket={video.socketId}
-                                    ref={ref => {
-                                        if (ref && video.stream) {
-                                            ref.srcObject = video.stream;
-                                        }
-                                    }}
-                                    autoPlay
-                                >
-                                </video>
-                            </div>
-
-                        ))}
-
-                    </div>
-
                 </div>
 
             }

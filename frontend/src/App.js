@@ -9,17 +9,26 @@ import History from './pages/history';
 
 function App() {
   return (
-    <Router>
-      <AuthProvider>
-      <Routes>
-        <Route path='/' element = {<LandingPage />} />
-        <Route path='/home' element = {<Home />} />
-        <Route path='/history' element={<History />} />
-        <Route path='/auth' element = {<Authentication />} />
-        <Route path='/:url' element = {<VideoMeetComponent />} />
-      </Routes>
-      </AuthProvider>
-    </Router>
+    <>
+    <div className="app-bg">
+        <div className="bg-vignette" />
+        <div className="bg-fog" />
+        <div className="bg-spot-1" />
+        <div className="bg-spot-2" />
+        <div className="bg-noise" />
+      </div>
+      <Router>
+         <AuthProvider>
+          <Routes>
+            <Route path='/' element = {<LandingPage />} />
+            <Route path='/home' element = {<Home />} />
+            <Route path='/history' element={<History />} />
+            <Route path='/auth' element = {<Authentication />} />
+            <Route path='/:url' element = {<VideoMeetComponent />} />
+          </Routes>
+        </AuthProvider>
+      </Router>
+    </>
   );
 }
 
