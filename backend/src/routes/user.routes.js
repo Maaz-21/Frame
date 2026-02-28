@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { login, register, getUserHistory, addToHistory, getMeetingStatus } from '../controllers/user.controller.js';
+import { login, register, getUserHistory, addToHistory, getMeetingStatus, getIceServers } from '../controllers/user.controller.js';
 import { authenticateToken } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -8,6 +8,7 @@ const router = Router();
 router.post('/login', login);
 router.post('/register', register);
 router.get('/meeting-status/:meetingCode', getMeetingStatus);
+router.get('/ice-servers', getIceServers);
 
 // Protected routes (require token)
 router.post('/add_to_activity', authenticateToken, addToHistory);

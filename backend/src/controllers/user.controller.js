@@ -3,6 +3,7 @@ import { User } from '../models/user.model.js';
 import { Meeting } from '../models/meeting.model.js';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
+import twilio from 'twilio';
 import { isMeetingActive } from '../socket/socketManager.js';
 
 const register = async (req, res) => {
@@ -146,4 +147,29 @@ const getMeetingStatus = (req, res) => {
     });
 };
 
-export { login, register, getUserHistory, addToHistory, getMeetingStatus };
+const getIceServers = async (req, res) => {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+    if (!accountSid || !authToken) {
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            message: 'Twilio credentials are not configured'
+        });
+    }
+
+    try {
+        const client = twilio(accountSid, authToken);
+        const token = await client.tokens.create();
+
+        return res.status(httpStatus.OK).json({
+            iceServers: token.iceServers || []
+        });
+    } catch (error) {
+        console.error('[Twilio ICE Error]', error.message);
+        return res.status(httpStatus.BAD_GATEWAY).json({
+            message: 'Failed to fetch ICE servers from Twilio'
+        });
+    }
+};
+
+export { login, register, getUserHistory, addToHistory, getMeetingStatus, getIceServers };

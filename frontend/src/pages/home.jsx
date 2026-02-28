@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
 import Navbar from '../components/Navbar';
 import Snackbar from '../components/Snackbar';
-import server from '../environment';
+import server from '../config/server';
 
 function getGreeting() {
     const hour = new Date().getHours();

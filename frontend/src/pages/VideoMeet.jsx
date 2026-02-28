@@ -1,18 +1,20 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import io from "socket.io-client";
-import server from '../environment';
+import axios from 'axios';
+import server from '../config/server';
 import ReactionPicker from '../components/ReactionPicker';
 import Snackbar from '../components/Snackbar';
 import { playJoinSound, playLeaveSound, playMessageSound, playReactionSound, playHandRaiseSound } from '../utils/sounds';
 
 const server_url = server;
 var connections = {};
+const defaultIceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+];
 
-const peerConfigConnections = {
-    "iceServers": [
-        { "urls": "stun:stun.l.google.com:19302" },
-        { "urls": "stun:stun1.l.google.com:19302" }
-    ]
+let activePeerConfig = {
+    iceServers: defaultIceServers
 };
 
 // Extract meeting code from URL path
@@ -69,6 +71,19 @@ export default function VideoMeetComponent() {
     const audioAnalyserRef = useRef();
     const reactionIdCounter = useRef(0);
     const pushToTalkPrevState = useRef(null);
+
+    const fetchIceServers = useCallback(async () => {
+        try {
+            const response = await axios.get(`${server_url}/api/users/ice-servers`);
+            const iceServers = response?.data?.iceServers;
+            if (Array.isArray(iceServers) && iceServers.length > 0) {
+                return iceServers;
+            }
+        } catch (error) {
+            console.log('Falling back to STUN ICE servers:', error.message);
+        }
+        return defaultIceServers;
+    }, []);
 
     // ------ Refresh Persistence (Issue #1) ------
     useEffect(() => {
@@ -175,6 +190,9 @@ export default function VideoMeetComponent() {
     // ------ Speaking Indicator (Audio Analysis) ------
     const setupAudioAnalyser = useCallback(() => {
         if (!window.localStream) return;
+        if (!window.localStream.getAudioTracks || window.localStream.getAudioTracks().length === 0) {
+            return;
+        }
         try {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioCtx.createMediaStreamSource(window.localStream);
@@ -314,29 +332,27 @@ export default function VideoMeetComponent() {
     };
 
     const upsertRemoteStream = (socketListId, stream) => {
-        let videoExists = videoRef.current.find(video => video.socketId === socketListId);
-        if (videoExists) {
-            setVideos(videos => {
-                const updatedVideos = videos.map(video =>
+        setVideos((videos) => {
+            const existingIndex = videos.findIndex((video) => video.socketId === socketListId);
+
+            let updatedVideos;
+            if (existingIndex !== -1) {
+                updatedVideos = videos.map((video) =>
                     video.socketId === socketListId ? { ...video, stream } : video
                 );
-                videoRef.current = updatedVideos;
-                return updatedVideos;
-            });
-        } else {
-            let newVideo = { socketId: socketListId, stream, autoplay: true, playsinline: true };
-            setVideos(videos => {
-                const updatedVideos = [...videos, newVideo];
-                videoRef.current = updatedVideos;
-                return updatedVideos;
-            });
-        }
+            } else {
+                updatedVideos = [...videos, { socketId: socketListId, stream, autoplay: true, playsinline: true }];
+            }
+
+            videoRef.current = updatedVideos;
+            return updatedVideos;
+        });
     };
 
     const ensurePeerConnection = (socketListId) => {
         if (connections[socketListId]) return connections[socketListId];
 
-        const peerConnection = new RTCPeerConnection(peerConfigConnections);
+        const peerConnection = new RTCPeerConnection(activePeerConfig);
 
         peerConnection.onicecandidate = function (event) {
             if (event.candidate != null && socketRef.current) {
@@ -447,7 +463,12 @@ export default function VideoMeetComponent() {
     };
 
     // ------ Socket Connection ------
-    const connectToSocketServer = () => {
+    const connectToSocketServer = async () => {
+        const resolvedIceServers = await fetchIceServers();
+        activePeerConfig = {
+            iceServers: resolvedIceServers
+        };
+
         connections = {};
         socketRef.current = io(server_url, {
             transports: ['websocket', 'polling'],
@@ -473,6 +494,10 @@ export default function VideoMeetComponent() {
                 setSpeakingUsers(prev => { const n = new Set(prev); n.delete(id); return n; });
                 setPeerNames(prev => { const n = { ...prev }; delete n[id]; return n; });
                 setPeerMediaStates(prev => { const n = { ...prev }; delete n[id]; return n; });
+                if (connections[id]) {
+                    try { connections[id].close(); } catch (e) { }
+                    delete connections[id];
+                }
                 playLeaveSound();
             });
 
@@ -905,6 +930,11 @@ export default function VideoMeetComponent() {
                                             <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>mic_off</span>
                                         </div>
                                     )}
+                                    {peerMediaStates[vid.socketId]?.video === false && (
+                                        <div className="raised-hand-badge" style={{ right: 40, left: 'auto', background: 'rgba(245,158,11,0.9)' }}>
+                                            <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>videocam_off</span>
+                                        </div>
+                                    )}
                                     {raisedHands.has(vid.socketId) && (
                                         <div className="raised-hand-badge">✋</div>
                                     )}
@@ -923,6 +953,11 @@ export default function VideoMeetComponent() {
                         {!audio && (
                             <div className="raised-hand-badge" style={{ right: 8, left: 'auto', background: 'rgba(239,68,68,0.9)' }}>
                                 <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>mic_off</span>
+                            </div>
+                        )}
+                        {!video && (
+                            <div className="raised-hand-badge" style={{ right: 40, left: 'auto', background: 'rgba(245,158,11,0.9)' }}>
+                                <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>videocam_off</span>
                             </div>
                         )}
                         {handRaised && (

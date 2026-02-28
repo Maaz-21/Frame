@@ -4,3 +4,4 @@ frontend/build
 backend/dist
 # env
 backend/.env
+frontend/.env
