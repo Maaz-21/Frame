@@ -3,6 +3,7 @@ import { User } from '../models/user.model.js';
 import { Meeting } from '../models/meeting.model.js';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
+import { isMeetingActive } from '../socket/socketManager.js';
 
 const register = async (req, res) => {
     const { name, username, password } = req.body;
@@ -130,4 +131,19 @@ const addToHistory = async (req, res) => {
     }
 };
 
-export { login, register, getUserHistory, addToHistory };
+const getMeetingStatus = (req, res) => {
+    const meetingCode = (req.params.meetingCode || '').trim();
+
+    if (!meetingCode) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Meeting code is required'
+        });
+    }
+
+    return res.status(httpStatus.OK).json({
+        meetingCode,
+        active: isMeetingActive(meetingCode)
+    });
+};
+
+export { login, register, getUserHistory, addToHistory, getMeetingStatus };

@@ -44,10 +44,6 @@ export const AuthProvider = ({ children }) => {
                 username: username,
                 password: password
             });
-
-            console.log(username, password)
-            console.log(request.data)
-
             if (request.status === httpStatus.OK) {
                 localStorage.setItem("token", request.data.user.token);
                 localStorage.setItem("username", request.data.user.username);
@@ -58,7 +54,6 @@ export const AuthProvider = ({ children }) => {
             throw err;
         }
     }
-
     const getHistoryOfUser = async () => {
         try {
             let request = await client.get("/get_all_activity", {
@@ -72,7 +67,6 @@ export const AuthProvider = ({ children }) => {
             throw err;
         }
     }
-
     const addToUserHistory = async (meetingCode) => {
         try {
             let request = await client.post("/add_to_activity", {

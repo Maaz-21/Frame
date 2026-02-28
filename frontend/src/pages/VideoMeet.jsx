@@ -18,7 +18,7 @@ const peerConfigConnections = {
 // Extract meeting code from URL path
 const getMeetingCode = () => {
     const path = window.location.pathname;
-    return path.replace(/^\//, '');
+    return path.replace(/^\/+|\/+$/g, '');
 };
 
 // SessionStorage key for this meeting
@@ -55,6 +55,7 @@ export default function VideoMeetComponent() {
     const [pushToTalkActive, setPushToTalkActive] = useState(false);
     const [chatWidth, setChatWidth] = useState(340);
     const [peerNames, setPeerNames] = useState({}); // socketId -> username
+    const [peerMediaStates, setPeerMediaStates] = useState({}); // socketId -> { audio, video }
     const [snack, setSnack] = useState({ open: false, message: '', variant: 'info' });
 
     const videoRef = useRef([]);
@@ -312,6 +313,59 @@ export default function VideoMeetComponent() {
         }
     };
 
+    const upsertRemoteStream = (socketListId, stream) => {
+        let videoExists = videoRef.current.find(video => video.socketId === socketListId);
+        if (videoExists) {
+            setVideos(videos => {
+                const updatedVideos = videos.map(video =>
+                    video.socketId === socketListId ? { ...video, stream } : video
+                );
+                videoRef.current = updatedVideos;
+                return updatedVideos;
+            });
+        } else {
+            let newVideo = { socketId: socketListId, stream, autoplay: true, playsinline: true };
+            setVideos(videos => {
+                const updatedVideos = [...videos, newVideo];
+                videoRef.current = updatedVideos;
+                return updatedVideos;
+            });
+        }
+    };
+
+    const ensurePeerConnection = (socketListId) => {
+        if (connections[socketListId]) return connections[socketListId];
+
+        const peerConnection = new RTCPeerConnection(peerConfigConnections);
+
+        peerConnection.onicecandidate = function (event) {
+            if (event.candidate != null && socketRef.current) {
+                socketRef.current.emit('signal', socketListId, JSON.stringify({ 'ice': event.candidate }));
+            }
+        };
+
+        peerConnection.ontrack = (event) => {
+            if (event.streams && event.streams[0]) {
+                upsertRemoteStream(socketListId, event.streams[0]);
+            }
+        };
+
+        if (window.localStream !== undefined && window.localStream !== null) {
+            window.localStream.getTracks().forEach((track) => {
+                peerConnection.addTrack(track, window.localStream);
+            });
+        } else {
+            let blackSilence = (...args) => new MediaStream([black(...args), silence()]);
+            window.localStream = blackSilence();
+            window.localStream.getTracks().forEach((track) => {
+                peerConnection.addTrack(track, window.localStream);
+            });
+        }
+
+        connections[socketListId] = peerConnection;
+        return peerConnection;
+    };
+
     const getUserMediaSuccess = (stream) => {
         try { window.localStream.getTracks().forEach(track => track.stop()); } catch (e) { }
         window.localStream = stream;
@@ -346,7 +400,7 @@ export default function VideoMeetComponent() {
     const getDislayMedia = () => {
         if (screen) {
             if (navigator.mediaDevices.getDisplayMedia) {
-                navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+                navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
                     .then(getDislayMediaSuccess)
                     .catch((e) => console.log(e));
             }
@@ -374,33 +428,41 @@ export default function VideoMeetComponent() {
     const gotMessageFromServer = (fromId, message) => {
         var signal = JSON.parse(message);
         if (fromId !== socketIdRef.current) {
+            const fromPeer = ensurePeerConnection(fromId);
             if (signal.sdp) {
-                connections[fromId].setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(() => {
+                fromPeer.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(() => {
                     if (signal.sdp.type === 'offer') {
-                        connections[fromId].createAnswer().then((description) => {
-                            connections[fromId].setLocalDescription(description).then(() => {
-                                socketRef.current.emit('signal', fromId, JSON.stringify({ 'sdp': connections[fromId].localDescription }));
+                        fromPeer.createAnswer().then((description) => {
+                            fromPeer.setLocalDescription(description).then(() => {
+                                socketRef.current.emit('signal', fromId, JSON.stringify({ 'sdp': fromPeer.localDescription }));
                             }).catch(e => console.log(e));
                         }).catch(e => console.log(e));
                     }
                 }).catch(e => console.log(e));
             }
             if (signal.ice) {
-                connections[fromId].addIceCandidate(new RTCIceCandidate(signal.ice)).catch(e => console.log(e));
+                fromPeer.addIceCandidate(new RTCIceCandidate(signal.ice)).catch(e => console.log(e));
             }
         }
     };
 
     // ------ Socket Connection ------
     const connectToSocketServer = () => {
-        socketRef.current = io.connect(server_url, { secure: false });
+        connections = {};
+        socketRef.current = io(server_url, {
+            transports: ['websocket', 'polling'],
+            withCredentials: true
+        });
         socketRef.current.on('signal', gotMessageFromServer);
 
         socketRef.current.on('connect', () => {
-            // Issue #1: Send username along with join-call
-            // Issue #4: Backend now stores socketId -> username mapping
-            socketRef.current.emit('join-call', window.location.href, username);
+            const meetingCode = getMeetingCode();
+            socketRef.current.emit('join-call', meetingCode, username);
             socketIdRef.current = socketRef.current.id;
+            socketRef.current.emit('media-state', {
+                audio: typeof audio === 'boolean' ? audio : true,
+                video: typeof video === 'boolean' ? video : true
+            });
 
             socketRef.current.on('chat-message', addMessage);
 
@@ -410,7 +472,18 @@ export default function VideoMeetComponent() {
                 setRaisedHands(prev => { const n = new Map(prev); n.delete(id); return n; });
                 setSpeakingUsers(prev => { const n = new Set(prev); n.delete(id); return n; });
                 setPeerNames(prev => { const n = { ...prev }; delete n[id]; return n; });
+                setPeerMediaStates(prev => { const n = { ...prev }; delete n[id]; return n; });
                 playLeaveSound();
+            });
+
+            socketRef.current.on('media-state', (peerSocketId, state) => {
+                setPeerMediaStates(prev => ({
+                    ...prev,
+                    [peerSocketId]: {
+                        audio: typeof state?.audio === 'boolean' ? state.audio : true,
+                        video: typeof state?.video === 'boolean' ? state.video : true
+                    }
+                }));
             });
 
             // Typing indicator events
@@ -467,7 +540,7 @@ export default function VideoMeetComponent() {
             });
 
             // Issue #4: user-joined now carries roomNames
-            socketRef.current.on('user-joined', (id, clients, roomNames) => {
+            socketRef.current.on('user-joined', (id, clients, roomNames, roomMediaStates) => {
                 setParticipantCount(clients.length);
                 if (id !== socketIdRef.current) playJoinSound();
 
@@ -476,51 +549,22 @@ export default function VideoMeetComponent() {
                     setPeerNames(prev => ({ ...prev, ...roomNames }));
                 }
 
+                if (roomMediaStates) {
+                    setPeerMediaStates(prev => ({ ...prev, ...roomMediaStates }));
+                }
+
                 clients.forEach((socketListId) => {
-                    connections[socketListId] = new RTCPeerConnection(peerConfigConnections);
-
-                    connections[socketListId].onicecandidate = function (event) {
-                        if (event.candidate != null) {
-                            socketRef.current.emit('signal', socketListId, JSON.stringify({ 'ice': event.candidate }));
-                        }
-                    };
-
-                    connections[socketListId].onaddstream = (event) => {
-                        let videoExists = videoRef.current.find(video => video.socketId === socketListId);
-                        if (videoExists) {
-                            setVideos(videos => {
-                                const updatedVideos = videos.map(video =>
-                                    video.socketId === socketListId ? { ...video, stream: event.stream } : video
-                                );
-                                videoRef.current = updatedVideos;
-                                return updatedVideos;
-                            });
-                        } else {
-                            let newVideo = { socketId: socketListId, stream: event.stream, autoplay: true, playsinline: true };
-                            setVideos(videos => {
-                                const updatedVideos = [...videos, newVideo];
-                                videoRef.current = updatedVideos;
-                                return updatedVideos;
-                            });
-                        }
-                    };
-
-                    if (window.localStream !== undefined && window.localStream !== null) {
-                        connections[socketListId].addStream(window.localStream);
-                    } else {
-                        let blackSilence = (...args) => new MediaStream([black(...args), silence()]);
-                        window.localStream = blackSilence();
-                        connections[socketListId].addStream(window.localStream);
-                    }
+                    if (socketListId === socketIdRef.current) return;
+                    ensurePeerConnection(socketListId);
                 });
 
                 if (id === socketIdRef.current) {
                     for (let id2 in connections) {
                         if (id2 === socketIdRef.current) continue;
-                        try { connections[id2].addStream(window.localStream); } catch (e) { }
-                        connections[id2].createOffer().then((description) => {
-                            connections[id2].setLocalDescription(description)
-                                .then(() => { socketRef.current.emit('signal', id2, JSON.stringify({ 'sdp': connections[id2].localDescription })); })
+                        const peerConnection = ensurePeerConnection(id2);
+                        peerConnection.createOffer().then((description) => {
+                            peerConnection.setLocalDescription(description)
+                                .then(() => { socketRef.current.emit('signal', id2, JSON.stringify({ 'sdp': peerConnection.localDescription })); })
                                 .catch(e => console.log(e));
                         });
                     }
@@ -550,6 +594,14 @@ export default function VideoMeetComponent() {
         if (pushToTalkActive) return;
         setAudio(!audio);
     };
+
+    useEffect(() => {
+        if (!socketRef.current || askForUsername || !socketIdRef.current) return;
+        socketRef.current.emit('media-state', {
+            audio: typeof audio === 'boolean' ? audio : true,
+            video: typeof video === 'boolean' ? video : true
+        });
+    }, [audio, video, askForUsername]);
 
     useEffect(() => {
         if (screen !== undefined) getDislayMedia();
@@ -848,6 +900,11 @@ export default function VideoMeetComponent() {
                                         {raisedHands.has(vid.socketId) && <span className="mr-1">✋</span>}
                                         {peerNames[vid.socketId] || 'Guest'}
                                     </span>
+                                    {peerMediaStates[vid.socketId]?.audio === false && (
+                                        <div className="raised-hand-badge" style={{ right: 8, left: 'auto', background: 'rgba(239,68,68,0.9)' }}>
+                                            <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>mic_off</span>
+                                        </div>
+                                    )}
                                     {raisedHands.has(vid.socketId) && (
                                         <div className="raised-hand-badge">✋</div>
                                     )}
@@ -863,6 +920,11 @@ export default function VideoMeetComponent() {
                             {handRaised && <span className="mr-1">✋</span>}
                             You
                         </span>
+                        {!audio && (
+                            <div className="raised-hand-badge" style={{ right: 8, left: 'auto', background: 'rgba(239,68,68,0.9)' }}>
+                                <span className="material-symbols-rounded" style={{ fontSize: '12px' }}>mic_off</span>
+                            </div>
+                        )}
                         {handRaised && (
                             <div className="raised-hand-badge">✋</div>
                         )}

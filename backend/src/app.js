@@ -11,15 +11,19 @@ const app = express();
 const server = createServer(app);
 
 const PORT = process.env.PORT || 8000;
-const allowedOrigins = process.env.FRONTEND_URLS.split(',')
-                                                .map((origin) => origin.trim())
-                                                .filter(Boolean);                                             
+const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
+const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => normalizeOrigin(origin))
+    .filter(Boolean);
+
 const corsOptions = {
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
+        const normalizedRequestOrigin = normalizeOrigin(origin || '');
+        if (!origin || allowedOrigins.includes(normalizedRequestOrigin)) {
             return callback(null, true);
         }
-        return callback(new Error(`CORS blocked for origin: ${origin}`));
+        return callback(new Error(`CORS blocked for origin: ${normalizedRequestOrigin}`));
     },
     credentials: true
 };

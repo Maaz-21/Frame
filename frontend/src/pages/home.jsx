@@ -1,9 +1,11 @@
 import React, { useContext, useState, useEffect } from 'react';
+import axios from 'axios';
 import withAuth from '../utils/withAuth';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '../contexts/AuthContext';
 import Navbar from '../components/Navbar';
 import Snackbar from '../components/Snackbar';
+import server from '../environment';
 
 function getGreeting() {
     const hour = new Date().getHours();
@@ -45,13 +47,22 @@ function HomeComponent() {
     }, []);
 
     const handleJoinVideoCall = async () => {
-        if (!meetingCode.trim()) {
+        const code = meetingCode.trim();
+        if (!code) {
             setSnack({ open: true, message: 'Please enter a meeting code', variant: 'warning' });
             return;
         }
+
         try {
-            await addToUserHistory(meetingCode);
-            navigate(`/${meetingCode}`);
+            const { data } = await axios.get(`${server}/api/users/meeting-status/${encodeURIComponent(code)}`);
+
+            if (!data?.active) {
+                setSnack({ open: true, message: 'No active meeting found with this code', variant: 'warning' });
+                return;
+            }
+
+            await addToUserHistory(code);
+            navigate(`/${code}`);
         } catch {
             setSnack({ open: true, message: 'Failed to join meeting', variant: 'error' });
         }

@@ -5,19 +5,27 @@ const messages = new Map();
 const timeOnline = new Map();
 const roomStartTimes = new Map();
 const usernames = new Map(); // socketId -> username
+const mediaStates = new Map(); // socketId -> { audio, video }
+const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
 const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => normalizeOrigin(origin))
     .filter(Boolean);
+
+export const isMeetingActive = (meetingCode) => {
+    const clients = connections.get((meetingCode || '').trim());
+    return Array.isArray(clients) && clients.length > 0;
+};
 
 export const connectToSocket = (server) => {
     const io = new Server(server, {
         cors: {
             origin: (origin, callback) => {
-                if (!origin || allowedOrigins.includes(origin)) {
+                const normalizedRequestOrigin = normalizeOrigin(origin || '');
+                if (!origin || allowedOrigins.includes(normalizedRequestOrigin)) {
                     return callback(null, true);
                 }
-                return callback(new Error(`Socket CORS blocked for origin: ${origin}`));
+                return callback(new Error(`Socket CORS blocked for origin: ${normalizedRequestOrigin}`));
             },
             methods: ['GET', 'POST'],
             allowedHeaders: ['*'],
@@ -51,16 +59,28 @@ export const connectToSocket = (server) => {
         return names;
     };
 
+    const getRoomMediaStates = (roomKey) => {
+        const clients = connections.get(roomKey) || [];
+        const states = {};
+        clients.forEach(id => {
+            if (mediaStates.has(id)) states[id] = mediaStates.get(id);
+        });
+        return states;
+    };
+
     io.on('connection', (socket) => {
         console.log(`[Socket] Connected: ${socket.id}`);
 
         // --- Join Call ---
-        socket.on('join-call', (path, username) => {
-            if (!connections.has(path)) {
-                connections.set(path, []);
-                roomStartTimes.set(path, Date.now());
+        socket.on('join-call', (meetingCode, username) => {
+            const roomKey = (meetingCode || '').trim();
+            if (!roomKey) return;
+
+            if (!connections.has(roomKey)) {
+                connections.set(roomKey, []);
+                roomStartTimes.set(roomKey, Date.now());
             }
-            connections.get(path).push(socket.id);
+            connections.get(roomKey).push(socket.id);
             timeOnline.set(socket.id, Date.now());
 
             // Store username
@@ -68,22 +88,23 @@ export const connectToSocket = (server) => {
                 usernames.set(socket.id, username);
             }
 
-            socket.join(path);
+            socket.join(roomKey);
 
-            const roomClients = connections.get(path);
-            const roomNames = getRoomUsernames(path);
+            const roomClients = connections.get(roomKey);
+            const roomNames = getRoomUsernames(roomKey);
+            const roomMediaStates = getRoomMediaStates(roomKey);
 
             // Send user-joined with client list AND usernames map
             roomClients.forEach((clientId) => {
-                io.to(clientId).emit('user-joined', socket.id, roomClients, roomNames);
+                io.to(clientId).emit('user-joined', socket.id, roomClients, roomNames, roomMediaStates);
             });
 
             // Send meeting start time to the new user
-            io.to(socket.id).emit('meeting-start-time', roomStartTimes.get(path));
+            io.to(socket.id).emit('meeting-start-time', roomStartTimes.get(roomKey));
 
             // Send existing messages
-            if (messages.has(path)) {
-                messages.get(path).forEach((msg) => {
+            if (messages.has(roomKey)) {
+                messages.get(roomKey).forEach((msg) => {
                     io.to(socket.id).emit('chat-message', msg.data, msg.sender, msg.socketId);
                 });
             }
@@ -146,6 +167,19 @@ export const connectToSocket = (server) => {
             broadcastToRoom(room, 'reaction', emoji, username, socket.id);
         });
 
+        socket.on('media-state', (state = {}) => {
+            const room = findRoom(socket.id);
+            if (!room) return;
+
+            const nextState = {
+                audio: typeof state.audio === 'boolean' ? state.audio : true,
+                video: typeof state.video === 'boolean' ? state.video : true
+            };
+
+            mediaStates.set(socket.id, nextState);
+            broadcastToRoom(room, 'media-state', socket.id, nextState);
+        });
+
         // --- Raise Hand ---
         socket.on('raise-hand', (username) => {
             const room = findRoom(socket.id);
@@ -167,6 +201,7 @@ export const connectToSocket = (server) => {
             console.log(`[Socket] Disconnected: ${socket.id} (online ${Math.round(onlineTime / 1000)}s)`);
             timeOnline.delete(socket.id);
             usernames.delete(socket.id);
+            mediaStates.delete(socket.id);
 
             for (const [roomKey, roomClients] of connections) {
                 const idx = roomClients.indexOf(socket.id);
