@@ -11,12 +11,21 @@ const app = express();
 const server = createServer(app);
 
 const PORT = process.env.PORT || 8000;
+const allowedOrigins = process.env.FRONTEND_URLS.split(',')
+                                                .map((origin) => origin.trim())
+                                                .filter(Boolean);                                             
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true
+};
 
 // --- Middleware ---
-app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    credentials: true
-}));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '40kb' }));
 app.use(express.urlencoded({ limit: '40kb', extended: true }));
 

@@ -5,11 +5,20 @@ const messages = new Map();
 const timeOnline = new Map();
 const roomStartTimes = new Map();
 const usernames = new Map(); // socketId -> username
+const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
 export const connectToSocket = (server) => {
     const io = new Server(server, {
         cors: {
-            origin: '*',
+            origin: (origin, callback) => {
+                if (!origin || allowedOrigins.includes(origin)) {
+                    return callback(null, true);
+                }
+                return callback(new Error(`Socket CORS blocked for origin: ${origin}`));
+            },
             methods: ['GET', 'POST'],
             allowedHeaders: ['*'],
             credentials: true
