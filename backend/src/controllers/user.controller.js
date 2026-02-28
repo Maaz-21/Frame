@@ -1,44 +1,59 @@
 import httpStatus from 'http-status';
-import {User} from '../models/user.model.js';
-import {Meeting} from '../models/meeting.model.js';
-import bcrypt, {hash} from 'bcrypt'; 
+import { User } from '../models/user.model.js';
+import { Meeting } from '../models/meeting.model.js';
+import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 
-const register = async(req, res)=> {
-    const {name, username, password }= req.body;
+const register = async (req, res) => {
+    const { name, username, password } = req.body;
 
-    try{
-        const existingUser =await User.findOne({username});
-        if(existingUser){
-            return res.status(httpStatus.FOUND).json({message: 'User already exists with this username'});
+    if (!name || !username || !password) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Name, username, and password are required'
+        });
+    }
+
+    if (password.length < 6) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Password must be at least 6 characters'
+        });
+    }
+
+    try {
+        const existingUser = await User.findOne({ username });
+        if (existingUser) {
+            return res.status(httpStatus.FOUND).json({
+                message: 'User already exists with this username'
+            });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser =  new User({
-            name: name,
-            username: username,
+        const newUser = new User({
+            name,
+            username,
             password: hashedPassword
         });
         await newUser.save();
-        console.log('New user registered:', newUser);
-        res.status(httpStatus.CREATED).json({ message: 'User registered successfully',
+
+        res.status(httpStatus.CREATED).json({
+            message: 'User registered successfully',
             user: {
                 id: newUser._id,
                 name: newUser.name,
                 username: newUser.username
             }
         });
-
-    }catch(err){
-        console.error('Error during registration:', err);
-        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({message: 'Internal server error'});
+    } catch (err) {
+        console.error('[Register Error]', err.message);
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            message: 'Internal server error'
+        });
     }
-}
+};
 
 const login = async (req, res) => {
     const { username, password } = req.body;
-    
-    // Input validation
+
     if (!username || !password) {
         return res.status(httpStatus.BAD_REQUEST).json({
             message: 'Username and password are required'
@@ -54,15 +69,14 @@ const login = async (req, res) => {
         }
 
         const isPasswordValid = await bcrypt.compare(password, user.password);
-        console.log('Password comparison result:', isPasswordValid);
         if (!isPasswordValid) {
             return res.status(httpStatus.UNAUTHORIZED).json({
                 message: 'Invalid credentials'
             });
         }
 
-        // Generate a more secure token
-        const token = crypto.randomBytes(10).toString('hex');
+        // Generate secure token
+        const token = crypto.randomBytes(20).toString('hex');
         user.token = token;
         await user.save();
 
@@ -75,9 +89,8 @@ const login = async (req, res) => {
                 token: user.token
             }
         });
-
     } catch (err) {
-        console.error('Error during login:', err);
+        console.error('[Login Error]', err.message);
         return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
             message: 'Internal server error'
         });
@@ -85,39 +98,36 @@ const login = async (req, res) => {
 };
 
 const getUserHistory = async (req, res) => {
-    const { token } = req.query;
-
     try {
-        const user = await User.findOne({ token: token });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-        const meetings = await Meeting.find({ user_id: user.username })
-        res.json(meetings)
+        const user = req.user; // Populated by auth middleware
+        const meetings = await Meeting.find({ user_id: user.username }).sort({ date: -1 });
+        res.json(meetings);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
-}
+};
 
 const addToHistory = async (req, res) => {
-    const { token, meeting_code } = req.body;
+    const { meeting_code } = req.body;
+
+    if (!meeting_code) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Meeting code is required'
+        });
+    }
 
     try {
-        const user = await User.findOne({ token: token });
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
+        const user = req.user; // Populated by auth middleware
         const newMeeting = new Meeting({
             user_id: user.username,
             meetingCode: meeting_code
-        })
+        });
 
         await newMeeting.save();
-
-        res.status(httpStatus.CREATED).json({ message: "Added code to history" })
+        res.status(httpStatus.CREATED).json({ message: 'Added code to history' });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
-}
+};
 
-export { login, register, getUserHistory, addToHistory }
+export { login, register, getUserHistory, addToHistory };

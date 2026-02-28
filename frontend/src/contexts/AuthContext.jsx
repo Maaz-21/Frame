@@ -50,6 +50,8 @@ export const AuthProvider = ({ children }) => {
 
             if (request.status === httpStatus.OK) {
                 localStorage.setItem("token", request.data.user.token);
+                localStorage.setItem("username", request.data.user.username);
+                localStorage.setItem("name", request.data.user.name);
                 router("/home")
             }
         } catch (err) {
@@ -66,7 +68,7 @@ export const AuthProvider = ({ children }) => {
             });
             return request.data;
         } catch
-         (err) {
+        (err) {
             throw err;
         }
     }

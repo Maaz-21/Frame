@@ -1,40 +1,50 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
-import {createServer} from 'node:http';
-import mongoose from 'mongoose';
+import { createServer } from 'node:http';
 import cors from 'cors';
-import { connectToSocket } from './controllers/socketManager.js';
+import { connectToMongoDB } from './config/DBconnect.js';
+import { connectToSocket } from './socket/socketManager.js';
 import userRoutes from './routes/user.routes.js';
 
 const app = express();
-const server =createServer(app);
-const io =connectToSocket(server);
+const server = createServer(app);
 
-app.set('port', (process.env.PORT || 8000));
-app.use(cors());
-app.use(express.json({limit: '40kb'}));
-app.use(express.urlencoded({limit: '40kb', extended: true}));
+const PORT = process.env.PORT || 8000;
+
+// --- Middleware ---
+app.use(cors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true
+}));
+app.use(express.json({ limit: '40kb' }));
+app.use(express.urlencoded({ limit: '40kb', extended: true }));
+
+// --- Routes ---
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 app.use('/api/users', userRoutes);
 
-const start = async()=>{
-    // Connect to MongoDB
-    try{
-        console.log(process.env.MONGO_URL);
-        const connectDb =await mongoose.connect(process.env.MONGO_URL);
-        console.log('Connected to MongoDB:','Host: ', connectDb.connection.host, 'Name: ',connectDb.connection.name);
-    }catch(err){
-        console.error('Error connecting to MongoDB:', err);
-        process.exit(1);
-    }
-
-    server.listen(app.get('port'), () => {
-        console.log('Server is running on port 8000');
+// --- Global Error Handler ---
+app.use((err, req, res, next) => {
+    console.error('[Server Error]', err.message);
+    res.status(err.status || 500).json({
+        message: err.message || 'Internal server error'
     });
-}
+});
+
+// --- Start ---
+const start = async () => {
+    await connectToMongoDB();
+    connectToSocket(server);
+    server.listen(PORT, () => {
+        console.log(`🚀 Server running on port ${PORT}`);
+    });
+};
 
 start().catch((err) => {
-    console.error('Error starting the server:', err);
-}
-);
+    console.error('Failed to start server:', err);
+    process.exit(1);
+});
