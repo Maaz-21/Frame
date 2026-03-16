@@ -1,0 +1,18 @@
+services:
+  backend:             # Service name
+    build: ./backend   # Dockerfile location
+    container_name: frame-backend
+    ports: 
+        - "8000:8000"
+    env_file: 
+        - ./backend/.env
+
+  frontend:
+    build: ./frontend   
+    container_name: frame-frontend
+    ports: 
+        - "3000:80"
+    env_file:
+        - ./frontend/.env
+    depends_on:            # Start backend FIRST, then frontend
+        - backend  
