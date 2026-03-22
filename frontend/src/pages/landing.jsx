@@ -112,15 +112,17 @@ export default function LandingPage() {
               Start a Meeting
             </span>
           </button>
-          <button onClick={() => {
-            const code = Math.random().toString(36).substring(2, 8);
-            navigate(`/${code}`);
-          }} className="cta-dark">
-            <span className="flex items-center gap-2">
-              <span className="material-symbols-rounded text-lg">group</span>
-              Join as Guest
-            </span>
-          </button>
+          {!isLoggedin && (
+            <button onClick={() => {
+              const code = `g-${Math.random().toString(36).substring(2, 8)}`;
+              navigate(`/${code}`);
+            }} className="cta-dark">
+              <span className="flex items-center gap-2">
+                <span className="material-symbols-rounded text-lg">group</span>
+                Join as Guest
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Social Proof */}

@@ -1,9 +1,12 @@
 import { Server } from 'socket.io';
+import { User } from '../models/user.model.js';
 
 const connections = new Map();
 const messages = new Map();
 const timeOnline = new Map();
 const roomStartTimes = new Map();
+const roomAccessModes = new Map(); // roomKey -> 'guest' | 'member'
+const socketRooms = new Map(); // socketId -> roomKey
 const usernames = new Map(); // socketId -> username
 const mediaStates = new Map(); // socketId -> { audio, video }
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
@@ -35,11 +38,14 @@ export const connectToSocket = (server) => {
 
     // Helper: find room for a socket
     const findRoom = (socketId) => {
+        if (socketRooms.has(socketId)) return socketRooms.get(socketId);
         for (const [roomKey, roomClients] of connections) {
             if (roomClients.includes(socketId)) return roomKey;
         }
         return null;
     };
+
+    const isGuestRoom = (meetingCode = '') => meetingCode.toLowerCase().startsWith('g-');
 
     // Helper: broadcast to room
     const broadcastToRoom = (roomKey, event, ...args) => {
@@ -72,41 +78,90 @@ export const connectToSocket = (server) => {
         console.log(`[Socket] Connected: ${socket.id}`);
 
         // --- Join Call ---
-        socket.on('join-call', (meetingCode, username) => {
-            const roomKey = (meetingCode || '').trim();
-            if (!roomKey) return;
+        socket.on('join-call', async (joinPayload, fallbackUsername) => {
+            try {
+                const payload = typeof joinPayload === 'object' && joinPayload !== null
+                    ? joinPayload
+                    : { meetingCode: joinPayload, username: fallbackUsername };
 
-            if (!connections.has(roomKey)) {
-                connections.set(roomKey, []);
-                roomStartTimes.set(roomKey, Date.now());
-            }
-            connections.get(roomKey).push(socket.id);
-            timeOnline.set(socket.id, Date.now());
+                const roomKey = (payload.meetingCode || '').trim();
+                const requestedUsername = (payload.username || '').trim();
+                const token = typeof payload.token === 'string' ? payload.token.trim() : '';
+                const clientIsGuest = Boolean(payload.isGuest);
 
-            // Store username
-            if (username) {
-                usernames.set(socket.id, username);
-            }
+                if (!roomKey) {
+                    io.to(socket.id).emit('join-error', { message: 'Meeting code is required' });
+                    return;
+                }
 
-            socket.join(roomKey);
+                const roomMode = isGuestRoom(roomKey) ? 'guest' : 'member';
+                const storedRoomMode = roomAccessModes.get(roomKey);
+                if (storedRoomMode && storedRoomMode !== roomMode) {
+                    io.to(socket.id).emit('join-error', { message: 'Invalid meeting type' });
+                    return;
+                }
 
-            const roomClients = connections.get(roomKey);
-            const roomNames = getRoomUsernames(roomKey);
-            const roomMediaStates = getRoomMediaStates(roomKey);
+                let verifiedUsername = requestedUsername || 'Guest';
 
-            // Send user-joined with client list AND usernames map
-            roomClients.forEach((clientId) => {
-                io.to(clientId).emit('user-joined', socket.id, roomClients, roomNames, roomMediaStates);
-            });
+                if (roomMode === 'guest') {
+                    if (!clientIsGuest || token) {
+                        io.to(socket.id).emit('join-error', { message: 'Only guests can join guest meetings' });
+                        return;
+                    }
+                } else {
+                    if (!token) {
+                        io.to(socket.id).emit('join-error', { message: 'Please sign in to join this meeting' });
+                        return;
+                    }
 
-            // Send meeting start time to the new user
-            io.to(socket.id).emit('meeting-start-time', roomStartTimes.get(roomKey));
+                    const user = await User.findOne({ token }).select('username name');
+                    if (!user) {
+                        io.to(socket.id).emit('join-error', { message: 'Invalid or expired session. Please sign in again.' });
+                        return;
+                    }
 
-            // Send existing messages
-            if (messages.has(roomKey)) {
-                messages.get(roomKey).forEach((msg) => {
-                    io.to(socket.id).emit('chat-message', msg.data, msg.sender, msg.socketId);
+                    if (!requestedUsername) {
+                        verifiedUsername = user.name || user.username || 'Member';
+                    }
+                }
+
+                if (!connections.has(roomKey)) {
+                    connections.set(roomKey, []);
+                    roomStartTimes.set(roomKey, Date.now());
+                    roomAccessModes.set(roomKey, roomMode);
+                }
+
+                const roomClients = connections.get(roomKey);
+                if (!roomClients.includes(socket.id)) {
+                    roomClients.push(socket.id);
+                }
+
+                timeOnline.set(socket.id, Date.now());
+                socketRooms.set(socket.id, roomKey);
+                usernames.set(socket.id, verifiedUsername);
+
+                socket.join(roomKey);
+
+                const roomNames = getRoomUsernames(roomKey);
+                const roomMediaStates = getRoomMediaStates(roomKey);
+
+                // Send user-joined with client list AND usernames map
+                roomClients.forEach((clientId) => {
+                    io.to(clientId).emit('user-joined', socket.id, roomClients, roomNames, roomMediaStates);
                 });
+
+                // Send meeting start time to the new user
+                io.to(socket.id).emit('meeting-start-time', roomStartTimes.get(roomKey));
+
+                // Send existing messages
+                if (messages.has(roomKey)) {
+                    messages.get(roomKey).forEach((msg) => {
+                        io.to(socket.id).emit('chat-message', msg.data, msg.sender, msg.socketId);
+                    });
+                }
+            } catch (error) {
+                console.error('[Socket Join Error]', error.message);
+                io.to(socket.id).emit('join-error', { message: 'Unable to join meeting' });
             }
         });
 
@@ -200,6 +255,7 @@ export const connectToSocket = (server) => {
                 : 0;
             console.log(`[Socket] Disconnected: ${socket.id} (online ${Math.round(onlineTime / 1000)}s)`);
             timeOnline.delete(socket.id);
+            socketRooms.delete(socket.id);
             usernames.delete(socket.id);
             mediaStates.delete(socket.id);
 
@@ -218,6 +274,7 @@ export const connectToSocket = (server) => {
                         connections.delete(roomKey);
                         messages.delete(roomKey);
                         roomStartTimes.delete(roomKey);
+                        roomAccessModes.delete(roomKey);
                     }
                 }
             }

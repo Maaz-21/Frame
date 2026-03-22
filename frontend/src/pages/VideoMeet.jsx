@@ -23,6 +23,8 @@ const getMeetingCode = () => {
     return path.replace(/^\/+|\/+$/g, '');
 };
 
+const isGuestMeetingCode = (meetingCode = '') => meetingCode.toLowerCase().startsWith('g-');
+
 // SessionStorage key for this meeting
 const getSessionKey = () => `frame_meeting_${getMeetingCode()}`;
 
@@ -59,6 +61,7 @@ export default function VideoMeetComponent() {
     const [peerNames, setPeerNames] = useState({}); // socketId -> username
     const [peerMediaStates, setPeerMediaStates] = useState({}); // socketId -> { audio, video }
     const [snack, setSnack] = useState({ open: false, message: '', variant: 'info' });
+    const [accessDenied, setAccessDenied] = useState(false);
 
     const videoRef = useRef([]);
     const chatBottomRef = useRef();
@@ -71,6 +74,7 @@ export default function VideoMeetComponent() {
     const audioAnalyserRef = useRef();
     const reactionIdCounter = useRef(0);
     const pushToTalkPrevState = useRef(null);
+    const redirectTimerRef = useRef();
 
     const fetchIceServers = useCallback(async () => {
         try {
@@ -83,6 +87,70 @@ export default function VideoMeetComponent() {
             console.log('Falling back to STUN ICE servers:', error.message);
         }
         return defaultIceServers;
+    }, []);
+
+    const attachStreamToVideoElement = useCallback((videoElement, stream, options = {}) => {
+        if (!videoElement || !stream) return;
+
+        if (videoElement.srcObject !== stream) {
+            videoElement.srcObject = stream;
+        }
+
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+        videoElement.setAttribute('playsinline', 'true');
+
+        if (typeof options.muted === 'boolean') {
+            videoElement.muted = options.muted;
+        }
+
+        const playPromise = videoElement.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => { });
+        }
+    }, []);
+
+    const applySilentLocalStream = useCallback(() => {
+        const blackSilence = (...args) => new MediaStream([black(...args), silence()]);
+        window.localStream = blackSilence();
+        if (localVideoref.current) {
+            attachStreamToVideoElement(localVideoref.current, window.localStream, { muted: true });
+        }
+        replaceStream(window.localStream);
+    }, [attachStreamToVideoElement]);
+
+    useEffect(() => {
+        const meetingCode = getMeetingCode();
+        const isGuestMeeting = isGuestMeetingCode(meetingCode);
+        const token = localStorage.getItem('token');
+
+        if (isGuestMeeting && token) {
+            setAccessDenied(true);
+            setSnack({ open: true, message: 'Signed-in users cannot join guest meetings', variant: 'warning' });
+            redirectTimerRef.current = setTimeout(() => {
+                window.location.href = '/home';
+            }, 1200);
+            return;
+        }
+
+        if (!isGuestMeeting && !token) {
+            setAccessDenied(true);
+            setSnack({ open: true, message: 'Please sign in to join this meeting', variant: 'warning' });
+            redirectTimerRef.current = setTimeout(() => {
+                window.location.href = '/auth';
+            }, 1200);
+            return;
+        }
+
+        setAccessDenied(false);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (redirectTimerRef.current) {
+                clearTimeout(redirectTimerRef.current);
+            }
+        };
     }, []);
 
     // ------ Refresh Persistence (Issue #1) ------
@@ -120,34 +188,30 @@ export default function VideoMeetComponent() {
     }, []);
 
     const getPermissions = async () => {
-        try {
-            const videoPermission = await navigator.mediaDevices.getUserMedia({ video: true });
-            if (videoPermission) {
-                setVideoAvailable(true);
-                videoPermission.getTracks().forEach(t => t.stop());
-            }
-        } catch { setVideoAvailable(false); }
-
-        try {
-            const audioPermission = await navigator.mediaDevices.getUserMedia({ audio: true });
-            if (audioPermission) {
-                setAudioAvailable(true);
-                audioPermission.getTracks().forEach(t => t.stop());
-            }
-        } catch { setAudioAvailable(false); }
-
         setScreenAvailable(!!navigator.mediaDevices.getDisplayMedia);
+
+        if (!navigator?.mediaDevices?.getUserMedia) {
+            setVideoAvailable(false);
+            setAudioAvailable(false);
+            setSnack({ open: true, message: 'Camera and microphone are not supported in this browser', variant: 'error' });
+            return;
+        }
 
         try {
             const userMediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
             if (userMediaStream) {
                 window.localStream = userMediaStream;
                 if (localVideoref.current) {
-                    localVideoref.current.srcObject = userMediaStream;
+                    attachStreamToVideoElement(localVideoref.current, userMediaStream, { muted: true });
                 }
             }
         } catch (error) {
             console.log('Media access error:', error.message);
+            setSnack({
+                open: true,
+                message: 'Camera/microphone will be requested again when you join',
+                variant: 'warning'
+            });
         }
     };
 
@@ -300,8 +364,8 @@ export default function VideoMeetComponent() {
 
     // ------ Media Handlers ------
     const getMedia = () => {
-        setVideo(videoAvailable);
-        setAudio(audioAvailable);
+        setVideo(Boolean(videoAvailable));
+        setAudio(Boolean(audioAvailable));
         connectToSocketServer();
     };
 
@@ -385,7 +449,9 @@ export default function VideoMeetComponent() {
     const getUserMediaSuccess = (stream) => {
         try { window.localStream.getTracks().forEach(track => track.stop()); } catch (e) { }
         window.localStream = stream;
-        if (localVideoref.current) localVideoref.current.srcObject = stream;
+        if (localVideoref.current) {
+            attachStreamToVideoElement(localVideoref.current, stream, { muted: true });
+        }
 
         setupAudioAnalyser();
 
@@ -398,19 +464,64 @@ export default function VideoMeetComponent() {
             try { let tracks = localVideoref.current.srcObject.getTracks(); tracks.forEach(t => t.stop()); } catch (e) { }
             let blackSilence = (...args) => new MediaStream([black(...args), silence()]);
             window.localStream = blackSilence();
-            if (localVideoref.current) localVideoref.current.srcObject = window.localStream;
+            if (localVideoref.current) {
+                attachStreamToVideoElement(localVideoref.current, window.localStream, { muted: true });
+            }
             replaceStream(window.localStream);
         });
     };
 
     const getUserMedia = () => {
-        if ((video && videoAvailable) || (audio && audioAvailable)) {
-            navigator.mediaDevices.getUserMedia({ video: video, audio: audio })
-                .then(getUserMediaSuccess)
-                .catch((e) => console.log(e));
-        } else {
+        const shouldRequestVideo = Boolean(video && videoAvailable);
+        const shouldRequestAudio = Boolean(audio && audioAvailable);
+
+        if (!(shouldRequestVideo || shouldRequestAudio)) {
             try { let tracks = localVideoref.current.srcObject.getTracks(); tracks.forEach(track => track.stop()); } catch (e) { }
+            applySilentLocalStream();
+            return;
         }
+
+        const tryGetMedia = async () => {
+            try {
+                const fullStream = await navigator.mediaDevices.getUserMedia({
+                    video: shouldRequestVideo,
+                    audio: shouldRequestAudio
+                });
+                getUserMediaSuccess(fullStream);
+                return;
+            } catch (fullError) {
+                if (shouldRequestVideo && shouldRequestAudio) {
+                    try {
+                        const videoOnlyStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                        setAudio(false);
+                        setAudioAvailable(false);
+                        setSnack({ open: true, message: 'Microphone access failed, joined with camera only', variant: 'warning' });
+                        getUserMediaSuccess(videoOnlyStream);
+                        return;
+                    } catch (videoOnlyError) {
+                        try {
+                            const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+                            setVideo(false);
+                            setVideoAvailable(false);
+                            setSnack({ open: true, message: 'Camera access failed, joined with audio only', variant: 'warning' });
+                            getUserMediaSuccess(audioOnlyStream);
+                            return;
+                        } catch (audioOnlyError) {
+                            console.log(audioOnlyError);
+                        }
+                        console.log(videoOnlyError);
+                    }
+                }
+
+                console.log(fullError);
+                setSnack({ open: true, message: 'Could not access camera/microphone on this device', variant: 'error' });
+                setVideo(false);
+                setAudio(false);
+                applySilentLocalStream();
+            }
+        };
+
+        tryGetMedia();
     };
 
     const getDislayMedia = () => {
@@ -427,7 +538,9 @@ export default function VideoMeetComponent() {
     const getDislayMediaSuccess = (stream) => {
         try { window.localStream.getTracks().forEach(track => track.stop()); } catch (e) { }
         window.localStream = stream;
-        if (localVideoref.current) localVideoref.current.srcObject = stream;
+        if (localVideoref.current) {
+            attachStreamToVideoElement(localVideoref.current, stream, { muted: true });
+        }
 
         replaceStream(stream);
 
@@ -436,7 +549,9 @@ export default function VideoMeetComponent() {
             try { let tracks = localVideoref.current.srcObject.getTracks(); tracks.forEach(t => t.stop()); } catch (e) { }
             let blackSilence = (...args) => new MediaStream([black(...args), silence()]);
             window.localStream = blackSilence();
-            if (localVideoref.current) localVideoref.current.srcObject = window.localStream;
+            if (localVideoref.current) {
+                attachStreamToVideoElement(localVideoref.current, window.localStream, { muted: true });
+            }
             getUserMedia();
         });
     };
@@ -475,10 +590,22 @@ export default function VideoMeetComponent() {
             withCredentials: true
         });
         socketRef.current.on('signal', gotMessageFromServer);
+        socketRef.current.on('join-error', (payload) => {
+            const message = payload?.message || 'Unable to join this meeting';
+            setSnack({ open: true, message, variant: 'error' });
+            socketRef.current.disconnect();
+        });
 
         socketRef.current.on('connect', () => {
             const meetingCode = getMeetingCode();
-            socketRef.current.emit('join-call', meetingCode, username);
+            const isGuestMeeting = isGuestMeetingCode(meetingCode);
+            const token = localStorage.getItem('token');
+            socketRef.current.emit('join-call', {
+                meetingCode,
+                username,
+                isGuest: isGuestMeeting,
+                token: isGuestMeeting ? null : token
+            });
             socketIdRef.current = socketRef.current.id;
             socketRef.current.emit('media-state', {
                 audio: typeof audio === 'boolean' ? audio : true,
@@ -675,6 +802,23 @@ export default function VideoMeetComponent() {
 
     const connect = () => {
         if (!username.trim()) return;
+        if (accessDenied) return;
+
+        const meetingCode = getMeetingCode();
+        const isGuestMeeting = isGuestMeetingCode(meetingCode);
+        const token = localStorage.getItem('token');
+
+        if (isGuestMeeting && token) {
+            setSnack({ open: true, message: 'Signed-in users cannot join guest meetings', variant: 'warning' });
+            return;
+        }
+
+        if (!isGuestMeeting && !token) {
+            setSnack({ open: true, message: 'Please sign in to join this meeting', variant: 'warning' });
+            window.location.href = '/auth';
+            return;
+        }
+
         // Issue #1: Save to sessionStorage for refresh persistence
         sessionStorage.setItem(getSessionKey(), JSON.stringify({ username }));
         setAskForUsername(false);
@@ -751,7 +895,7 @@ export default function VideoMeetComponent() {
                         </div>
 
                         <div className="relative mb-6">
-                            <video ref={localVideoref} autoPlay muted className="lobby-video" />
+                            <video ref={localVideoref} autoPlay playsInline muted className="lobby-video" />
                             <div className="absolute bottom-3 left-3 flex gap-2">
                                 <button onClick={() => setVideoAvailable(!videoAvailable)}
                                     className={videoAvailable ? 'btn-icon-active w-8 h-8' : 'btn-icon w-8 h-8'}>
@@ -793,7 +937,7 @@ export default function VideoMeetComponent() {
 
                             <button
                                 onClick={connect}
-                                disabled={!username.trim()}
+                                    disabled={!username.trim() || accessDenied}
                                 className="cta-glow w-full flex items-center justify-center gap-2 py-3 disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                                 <span className="material-symbols-rounded text-lg">login</span>
@@ -917,8 +1061,9 @@ export default function VideoMeetComponent() {
                                 <div key={vid.socketId} className={`video-tile ${speakingUsers.has(vid.socketId) ? 'speaking-ring' : ''}`}>
                                     <video
                                         data-socket={vid.socketId}
-                                        ref={ref => { if (ref && vid.stream) ref.srcObject = vid.stream; }}
+                                        ref={ref => { if (ref && vid.stream) attachStreamToVideoElement(ref, vid.stream); }}
                                         autoPlay
+                                        playsInline
                                     />
                                     {/* Issue #4: Display actual username instead of "Participant" */}
                                     <span className="video-tile-name">
@@ -945,7 +1090,7 @@ export default function VideoMeetComponent() {
 
                     {/* Issue #5: Self Video (PiP) — fixed positioning */}
                     <div className="self-video-pip">
-                        <video className={`meetUserVideo ${speakingUsers.has(socketIdRef.current) ? 'speaking-ring' : ''}`} ref={localVideoref} autoPlay muted />
+                        <video className={`meetUserVideo ${speakingUsers.has(socketIdRef.current) ? 'speaking-ring' : ''}`} ref={localVideoref} autoPlay playsInline muted />
                         <span className="video-tile-name">
                             {handRaised && <span className="mr-1">✋</span>}
                             You
