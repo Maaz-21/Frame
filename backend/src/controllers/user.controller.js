@@ -1,10 +1,18 @@
 import httpStatus from 'http-status';
 import { User } from '../models/user.model.js';
 import { Meeting } from '../models/meeting.model.js';
+import { MeetingSummary } from '../models/meetingSummary.model.js';
+import { generateMeetingSummary } from '../services/meetingSummary.service.js';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import twilio from 'twilio';
 import { isMeetingActive } from '../socket/socketManager.js';
+
+const canUserAccessMeeting = async (username, meetingCode) => {
+    if (!username || !meetingCode) return false;
+    const activity = await Meeting.findOne({ user_id: username, meetingCode }).select('_id');
+    return Boolean(activity);
+};
 
 const register = async (req, res) => {
     const { name, username, password } = req.body;
@@ -172,4 +180,115 @@ const getIceServers = async (req, res) => {
     }
 };
 
-export { login, register, getUserHistory, addToHistory, getMeetingStatus, getIceServers };
+const getMeetingSummary = async (req, res) => {
+    const meetingCode = (req.params.meetingCode || '').trim();
+    if (!meetingCode) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Meeting code is required'
+        });
+    }
+
+    try {
+        const user = req.user;
+        const hasAccess = await canUserAccessMeeting(user.username, meetingCode);
+        if (!hasAccess) {
+            return res.status(httpStatus.FORBIDDEN).json({
+                message: 'You do not have access to this meeting summary'
+            });
+        }
+
+        const summary = await MeetingSummary.findOne({ meetingCode }).sort({ sessionEnd: -1 });
+        if (!summary) {
+            return res.status(httpStatus.OK).json({
+                meetingCode,
+                summaryStatus: 'pending',
+                summaryPayload: null,
+                summaryError: 'Summary not available yet'
+            });
+        }
+
+        return res.status(httpStatus.OK).json(summary);
+    } catch (error) {
+        console.error('[Get Summary Error]', error?.message || error);
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            message: 'Failed to fetch meeting summary'
+        });
+    }
+};
+
+const regenerateMeetingSummary = async (req, res) => {
+    const meetingCode = (req.params.meetingCode || '').trim();
+    if (!meetingCode) {
+        return res.status(httpStatus.BAD_REQUEST).json({
+            message: 'Meeting code is required'
+        });
+    }
+
+    try {
+        const user = req.user;
+        const hasAccess = await canUserAccessMeeting(user.username, meetingCode);
+        if (!hasAccess) {
+            return res.status(httpStatus.FORBIDDEN).json({
+                message: 'You do not have access to regenerate this summary'
+            });
+        }
+
+        const summary = await MeetingSummary.findOne({ meetingCode }).sort({ sessionEnd: -1 });
+        if (!summary) {
+            return res.status(httpStatus.NOT_FOUND).json({
+                message: 'Summary source data is not available yet'
+            });
+        }
+
+        summary.summaryStatus = 'pending';
+        summary.summaryError = '';
+        await summary.save();
+
+        const payload = {
+            meetingCode: summary.meetingCode,
+            participants: summary.participants || [],
+            transcript: summary.transcript || [],
+            chatMessages: summary.chatMessages || [],
+            eventLog: summary.eventLog || [],
+            sessionStart: summary.sessionStart,
+            sessionEnd: summary.sessionEnd
+        };
+
+        generateMeetingSummary(payload)
+            .then(async ({ model, summary: nextSummary }) => {
+                await MeetingSummary.findByIdAndUpdate(summary._id, {
+                    summaryStatus: 'ready',
+                    summaryModel: model,
+                    summaryPayload: nextSummary,
+                    summaryError: ''
+                });
+            })
+            .catch(async (error) => {
+                await MeetingSummary.findByIdAndUpdate(summary._id, {
+                    summaryStatus: 'failed',
+                    summaryError: error?.message || 'Summary regeneration failed'
+                });
+                console.error('[Regenerate Summary Error]', error?.message || error);
+            });
+
+        return res.status(httpStatus.ACCEPTED).json({
+            message: 'Summary regeneration started'
+        });
+    } catch (error) {
+        console.error('[Regenerate Summary Error]', error?.message || error);
+        return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+            message: 'Failed to regenerate summary'
+        });
+    }
+};
+
+export {
+    login,
+    register,
+    getUserHistory,
+    addToHistory,
+    getMeetingStatus,
+    getIceServers,
+    getMeetingSummary,
+    regenerateMeetingSummary
+};

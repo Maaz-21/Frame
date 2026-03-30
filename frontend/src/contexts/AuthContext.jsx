@@ -79,9 +79,40 @@ export const AuthProvider = ({ children }) => {
         }
     }
 
+    const getMeetingSummary = async (meetingCode) => {
+        try {
+            const token = localStorage.getItem('token');
+            const request = await client.get(`/meeting-summary/${encodeURIComponent(meetingCode)}`, {
+                params: { token }
+            });
+            return request.data;
+        } catch (error) {
+            throw error;
+        }
+    };
+
+    const regenerateMeetingSummary = async (meetingCode) => {
+        try {
+            const token = localStorage.getItem('token');
+            const request = await client.post(`/meeting-summary/${encodeURIComponent(meetingCode)}/regenerate`, {
+                token
+            });
+            return request.data;
+        } catch (error) {
+            throw error;
+        }
+    };
+
 
     const data = {
-        userData, setUserData, addToUserHistory, getHistoryOfUser, handleRegister, handleLogin
+        userData,
+        setUserData,
+        addToUserHistory,
+        getHistoryOfUser,
+        getMeetingSummary,
+        regenerateMeetingSummary,
+        handleRegister,
+        handleLogin
     }
 
     return (

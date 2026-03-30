@@ -1,5 +1,14 @@
 import { Router } from 'express';
-import { login, register, getUserHistory, addToHistory, getMeetingStatus, getIceServers } from '../controllers/user.controller.js';
+import {
+	login,
+	register,
+	getUserHistory,
+	addToHistory,
+	getMeetingStatus,
+	getIceServers,
+	getMeetingSummary,
+	regenerateMeetingSummary
+} from '../controllers/user.controller.js';
 import { authenticateToken } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -13,5 +22,7 @@ router.get('/ice-servers', getIceServers);
 // Protected routes (require token)
 router.post('/add_to_activity', authenticateToken, addToHistory);
 router.get('/get_all_activity', authenticateToken, getUserHistory);
+router.get('/meeting-summary/:meetingCode', authenticateToken, getMeetingSummary);
+router.post('/meeting-summary/:meetingCode/regenerate', authenticateToken, regenerateMeetingSummary);
 
 export default router;

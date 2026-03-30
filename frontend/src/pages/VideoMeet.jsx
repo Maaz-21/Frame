@@ -62,6 +62,13 @@ export default function VideoMeetComponent() {
     const [peerMediaStates, setPeerMediaStates] = useState({}); // socketId -> { audio, video }
     const [snack, setSnack] = useState({ open: false, message: '', variant: 'info' });
     const [accessDenied, setAccessDenied] = useState(false);
+    const [captionsEnabled, setCaptionsEnabled] = useState(false);
+    const [shareTranscription, setShareTranscription] = useState(false);
+    const [showTranscriptPanel, setShowTranscriptPanel] = useState(false);
+    const [transcriptLines, setTranscriptLines] = useState([]);
+    const [transcriptPartials, setTranscriptPartials] = useState({});
+    const [transcriptionShares, setTranscriptionShares] = useState({}); // socketId -> true when sharing
+    const [transcriptionStarting, setTranscriptionStarting] = useState(false);
 
     const videoRef = useRef([]);
     const chatBottomRef = useRef();
@@ -75,6 +82,9 @@ export default function VideoMeetComponent() {
     const reactionIdCounter = useRef(0);
     const pushToTalkPrevState = useRef(null);
     const redirectTimerRef = useRef();
+    const transcriptionRecorderRef = useRef();
+    const transcriptionStreamRef = useRef();
+    const transcriptBottomRef = useRef();
 
     const fetchIceServers = useCallback(async () => {
         try {
@@ -362,6 +372,169 @@ export default function VideoMeetComponent() {
             .catch(() => setSnack({ open: true, message: 'Failed to copy code', variant: 'error' }));
     };
 
+    const stopTranscriptionCapture = useCallback((notifyServer = true) => {
+        const recorder = transcriptionRecorderRef.current;
+        if (recorder && recorder.state !== 'inactive') {
+            try {
+                recorder.stop();
+            } catch (error) {
+                console.log('Failed to stop transcription recorder:', error?.message || error);
+            }
+        }
+        transcriptionRecorderRef.current = null;
+
+        if (transcriptionStreamRef.current) {
+            try {
+                transcriptionStreamRef.current.getTracks().forEach((track) => track.stop());
+            } catch (error) {
+                console.log('Failed to stop transcription stream:', error?.message || error);
+            }
+            transcriptionStreamRef.current = null;
+        }
+
+        if (notifyServer && socketRef.current) {
+            socketRef.current.emit('transcription-stop');
+        }
+    }, []);
+
+    const startTranscriptionCapture = useCallback(async () => {
+        if (!socketRef.current) {
+            setSnack({ open: true, message: 'Socket is not connected yet', variant: 'warning' });
+            return;
+        }
+
+        if (!socketIdRef.current) {
+            setSnack({ open: true, message: 'Joining meeting... please try captions again in a moment', variant: 'warning' });
+            return;
+        }
+
+        if (!window.MediaRecorder) {
+            setSnack({ open: true, message: 'Live transcription is not supported in this browser', variant: 'error' });
+            return;
+        }
+
+        if (transcriptionStarting) {
+            return;
+        }
+
+        if (transcriptionRecorderRef.current && transcriptionRecorderRef.current.state !== 'inactive') {
+            return;
+        }
+
+        try {
+            setTranscriptionStarting(true);
+
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Transcription service did not respond in time'));
+                }, 9000);
+
+                const handleState = (state = {}) => {
+                    if (!state.active) return;
+                    cleanup();
+                    resolve(true);
+                };
+
+                const handleError = (payload = {}) => {
+                    cleanup();
+                    reject(new Error(payload.message || 'Unable to start transcription'));
+                };
+
+                const cleanup = () => {
+                    clearTimeout(timeout);
+                    socketRef.current?.off('transcription-state', handleState);
+                    socketRef.current?.off('transcription-error', handleError);
+                };
+
+                socketRef.current.on('transcription-state', handleState);
+                socketRef.current.on('transcription-error', handleError);
+
+                socketRef.current.emit('transcription-start', {
+                    shareEnabled: shareTranscription,
+                    language: 'en-US'
+                });
+            });
+
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            });
+
+            transcriptionStreamRef.current = stream;
+
+            const mimeCandidates = [
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/ogg;codecs=opus'
+            ];
+
+            const mimeType = mimeCandidates.find((candidate) =>
+                typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(candidate)
+            );
+
+            const recorder = mimeType
+                ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128000 })
+                : new MediaRecorder(stream);
+
+            recorder.ondataavailable = async (event) => {
+                if (!event.data || event.data.size === 0 || !socketRef.current) return;
+                try {
+                    const chunk = await event.data.arrayBuffer();
+                    socketRef.current.emit('transcription-audio-chunk', chunk);
+                } catch (error) {
+                    console.log('Failed to process transcription chunk:', error?.message || error);
+                }
+            };
+
+            recorder.onerror = () => {
+                setSnack({ open: true, message: 'Transcription recorder error', variant: 'error' });
+            };
+
+            recorder.start(250);
+            transcriptionRecorderRef.current = recorder;
+            setCaptionsEnabled(true);
+            setSnack({ open: true, message: 'Live transcription started', variant: 'success' });
+        } catch (error) {
+            stopTranscriptionCapture(false);
+            setCaptionsEnabled(false);
+            setSnack({
+                open: true,
+                message: error?.message || 'Unable to access microphone for transcription',
+                variant: 'error'
+            });
+        } finally {
+            setTranscriptionStarting(false);
+        }
+    }, [shareTranscription, stopTranscriptionCapture, transcriptionStarting]);
+
+    const toggleCaptions = async () => {
+        if (captionsEnabled) {
+            stopTranscriptionCapture(true);
+            setCaptionsEnabled(false);
+            setShareTranscription(false);
+            return;
+        }
+        await startTranscriptionCapture();
+    };
+
+    const toggleShareTranscription = () => {
+        if (!captionsEnabled) {
+            setSnack({ open: true, message: 'Start captions first, then share them', variant: 'warning' });
+            return;
+        }
+
+        const next = !shareTranscription;
+        setShareTranscription(next);
+        if (socketRef.current) {
+            socketRef.current.emit('transcription-share-toggle', { shareEnabled: next });
+        }
+    };
+
     // ------ Media Handlers ------
     const getMedia = () => {
         setVideo(Boolean(videoAvailable));
@@ -596,17 +769,97 @@ export default function VideoMeetComponent() {
             socketRef.current.disconnect();
         });
 
+        socketRef.current.on('transcript-history', (history = []) => {
+            if (!Array.isArray(history)) return;
+            setTranscriptLines(history.slice(-100));
+        });
+
+        socketRef.current.on('transcript-segment', (segment = {}) => {
+            const text = typeof segment.text === 'string' ? segment.text.trim() : '';
+            if (!text) return;
+
+            const normalizedSegment = {
+                ...segment,
+                text,
+                timestamp: segment.timestamp || Date.now()
+            };
+
+            if (normalizedSegment.isFinal) {
+                setTranscriptLines((prev) => {
+                    const next = [...prev, normalizedSegment];
+                    if (next.length > 100) {
+                        next.splice(0, next.length - 100);
+                    }
+                    return next;
+                });
+
+                setTranscriptPartials((prev) => {
+                    const next = { ...prev };
+                    delete next[normalizedSegment.speakerSocketId];
+                    return next;
+                });
+                return;
+            }
+
+            setTranscriptPartials((prev) => ({
+                ...prev,
+                [normalizedSegment.speakerSocketId]: normalizedSegment
+            }));
+        });
+
+        socketRef.current.on('transcription-state', (state = {}) => {
+            const active = Boolean(state.active);
+            const shared = Boolean(state.shareEnabled);
+            setCaptionsEnabled(active);
+            setShareTranscription(shared);
+
+            if (!active) {
+                setTranscriptPartials((prev) => {
+                    const next = { ...prev };
+                    delete next[socketIdRef.current];
+                    return next;
+                });
+            }
+        });
+
+        socketRef.current.on('transcription-share-state', (payload = {}) => {
+            const speakerSocketId = payload.socketId;
+            if (!speakerSocketId) return;
+
+            setTranscriptionShares((prev) => {
+                const next = { ...prev };
+                if (payload.shareEnabled) {
+                    next[speakerSocketId] = true;
+                } else {
+                    delete next[speakerSocketId];
+                }
+                return next;
+            });
+        });
+
+        socketRef.current.on('transcription-error', (payload) => {
+            const message = payload?.message || 'Transcription error';
+            setSnack({ open: true, message, variant: 'error' });
+        });
+
+        socketRef.current.on('disconnect', () => {
+            stopTranscriptionCapture(false);
+            setCaptionsEnabled(false);
+            setShareTranscription(false);
+        });
+
         socketRef.current.on('connect', () => {
             const meetingCode = getMeetingCode();
             const isGuestMeeting = isGuestMeetingCode(meetingCode);
             const token = localStorage.getItem('token');
+            socketIdRef.current = socketRef.current.id;
+
             socketRef.current.emit('join-call', {
                 meetingCode,
                 username,
                 isGuest: isGuestMeeting,
                 token: isGuestMeeting ? null : token
             });
-            socketIdRef.current = socketRef.current.id;
             socketRef.current.emit('media-state', {
                 audio: typeof audio === 'boolean' ? audio : true,
                 video: typeof video === 'boolean' ? video : true
@@ -621,6 +874,8 @@ export default function VideoMeetComponent() {
                 setSpeakingUsers(prev => { const n = new Set(prev); n.delete(id); return n; });
                 setPeerNames(prev => { const n = { ...prev }; delete n[id]; return n; });
                 setPeerMediaStates(prev => { const n = { ...prev }; delete n[id]; return n; });
+                setTranscriptionShares(prev => { const n = { ...prev }; delete n[id]; return n; });
+                setTranscriptPartials(prev => { const n = { ...prev }; delete n[id]; return n; });
                 if (connections[id]) {
                     try { connections[id].close(); } catch (e) { }
                     delete connections[id];
@@ -759,6 +1014,18 @@ export default function VideoMeetComponent() {
         if (screen !== undefined) getDislayMedia();
     }, [screen]);
 
+    useEffect(() => {
+        if (showTranscriptPanel && transcriptBottomRef.current) {
+            transcriptBottomRef.current.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [showTranscriptPanel, transcriptLines, transcriptPartials]);
+
+    useEffect(() => {
+        return () => {
+            stopTranscriptionCapture(false);
+        };
+    }, [stopTranscriptionCapture]);
+
     const handleScreen = () => setScreen(!screen);
 
     // Issue #1: Clear session + Issue #2: Save duration on end
@@ -776,6 +1043,7 @@ export default function VideoMeetComponent() {
         // Clear session so refresh doesn't re-join
         sessionStorage.removeItem(getSessionKey());
 
+        stopTranscriptionCapture(true);
         try { let tracks = localVideoref.current.srcObject.getTracks(); tracks.forEach(track => track.stop()); } catch (e) { }
         if (audioAnalyserRef.current) audioAnalyserRef.current = null;
         if (socketRef.current) socketRef.current.disconnect();
@@ -876,6 +1144,15 @@ export default function VideoMeetComponent() {
         if (names.length === 1) return `${names[0]} is typing`;
         return `${names.join(', ')} are typing`;
     })();
+
+    const transcriptPartialList = Object.values(transcriptPartials);
+    const latestPartial = transcriptPartialList.reduce((latest, item) => {
+        if (!latest) return item;
+        return (item?.timestamp || 0) > (latest?.timestamp || 0) ? item : latest;
+    }, null);
+    const latestFinal = transcriptLines.length > 0 ? transcriptLines[transcriptLines.length - 1] : null;
+    const latestCaption = latestPartial || latestFinal;
+    const activeSharersCount = Object.keys(transcriptionShares).length;
 
     // --- LOBBY SCREEN ---
     if (askForUsername) {
@@ -1045,6 +1322,84 @@ export default function VideoMeetComponent() {
 
                 {/* Video Area */}
                 <div className="videoPane flex-1 relative">
+                    {/* Live subtitle strip */}
+                    {latestCaption && (
+                        <div className="absolute left-1/2 -translate-x-1/2 bottom-24 z-20 max-w-[78%] px-4 py-2 rounded-xl text-center"
+                            style={{ background: 'rgba(9,12,20,0.76)', border: '1px solid rgba(255,255,255,0.12)', backdropFilter: 'blur(8px)' }}>
+                            <p className="text-sm leading-snug">
+                                <span className="font-semibold mr-1" style={{ color: '#34d399' }}>
+                                    {(latestCaption.speakerName || 'Speaker')}:
+                                </span>
+                                <span style={{ color: 'rgba(255,255,255,0.93)' }}>{latestCaption.text}</span>
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Transcript panel */}
+                    {showTranscriptPanel && (
+                        <div className="absolute right-4 top-4 z-30 w-[360px] max-w-[calc(100%-2rem)] h-[44vh] rounded-2xl overflow-hidden"
+                            style={{ background: 'rgba(8,10,16,0.92)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 10px 40px rgba(0,0,0,0.45)' }}>
+                            <div className="flex items-center justify-between px-4 py-3"
+                                style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                                <div className="flex items-center gap-2">
+                                    <span className="material-symbols-rounded text-base" style={{ color: '#34d399' }}>subtitles</span>
+                                    <p className="text-sm font-semibold text-white">Live Transcript</p>
+                                </div>
+                                <button onClick={() => setShowTranscriptPanel(false)} className="btn-icon w-7 h-7">
+                                    <span className="material-symbols-rounded text-sm">close</span>
+                                </button>
+                            </div>
+
+                            <div className="h-[calc(44vh-56px)] overflow-y-auto px-4 py-3 space-y-2">
+                                {transcriptLines.length === 0 && transcriptPartialList.length === 0 ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-center">
+                                        <span className="material-symbols-rounded text-3xl mb-2" style={{ color: 'rgba(255,255,255,0.1)' }}>hearing</span>
+                                        <p className="text-xs" style={{ color: 'rgba(255,255,255,0.32)' }}>
+                                            No transcript yet. Start captions to begin.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {transcriptLines.map((line, index) => (
+                                            <div key={`${line.timestamp || index}-${index}`} className="rounded-lg px-3 py-2"
+                                                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-[11px] font-semibold" style={{ color: '#34d399' }}>
+                                                        {line.speakerName || 'Speaker'}
+                                                    </span>
+                                                    <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.26)' }}>
+                                                        {line.timestamp ? formatMsgTime(line.timestamp) : ''}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.9)' }}>
+                                                    {line.text}
+                                                </p>
+                                            </div>
+                                        ))}
+
+                                        {transcriptPartialList.map((line, index) => (
+                                            <div key={`partial-${line.speakerSocketId || index}`} className="rounded-lg px-3 py-2"
+                                                style={{ background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.22)' }}>
+                                                <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-[11px] font-semibold" style={{ color: '#6ee7b7' }}>
+                                                        {line.speakerName || 'Speaker'} (live)
+                                                    </span>
+                                                    <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.26)' }}>
+                                                        {line.timestamp ? formatMsgTime(line.timestamp) : ''}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs leading-relaxed italic" style={{ color: 'rgba(255,255,255,0.86)' }}>
+                                                    {line.text}
+                                                </p>
+                                            </div>
+                                        ))}
+                                        <div ref={transcriptBottomRef} />
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Remote Videos */}
                     <div className={`conferenceView ${getGridClass()}`}>
                         {videos.length === 0 ? (
@@ -1140,6 +1495,21 @@ export default function VideoMeetComponent() {
                             </button>
                         )}
 
+                        {/* Captions */}
+                        <button title={captionsEnabled ? 'Stop live captions' : 'Start live captions'} onClick={toggleCaptions}
+                            disabled={transcriptionStarting}
+                            className={`${captionsEnabled ? 'btn-icon-active' : 'btn-icon'} ${transcriptionStarting ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                            <span className="material-symbols-rounded">subtitles</span>
+                        </button>
+
+                        <button
+                            title={shareTranscription ? 'Stop sharing your captions' : 'Share your captions'}
+                            onClick={toggleShareTranscription}
+                            disabled={!captionsEnabled}
+                            className={`${shareTranscription ? 'btn-icon-active' : 'btn-icon'} disabled:opacity-30 disabled:cursor-not-allowed`}>
+                            <span className="material-symbols-rounded">record_voice_over</span>
+                        </button>
+
                         {/* Reaction button */}
                         <div className="relative">
                             <button title="Reactions" onClick={() => setShowReactionPicker(!showReactionPicker)}
@@ -1189,6 +1559,20 @@ export default function VideoMeetComponent() {
                                 <span className="absolute -top-1 -right-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
                                     style={{ background: '#f43f5e', color: 'white' }}>
                                     {newMessages}
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Transcript toggle */}
+                        <div className="relative">
+                            <button title="Toggle transcript panel" onClick={() => setShowTranscriptPanel(!showTranscriptPanel)}
+                                className={showTranscriptPanel ? 'btn-icon-active' : 'btn-icon'}>
+                                <span className="material-symbols-rounded">notes</span>
+                            </button>
+                            {activeSharersCount > 0 && (
+                                <span className="absolute -top-1 -right-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                                    style={{ background: '#22c55e', color: 'white' }}>
+                                    {activeSharersCount}
                                 </span>
                             )}
                         </div>

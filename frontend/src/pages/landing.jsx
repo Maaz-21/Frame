@@ -4,9 +4,9 @@ import Navbar from "../components/Navbar";
 
 const FEATURES = [
   {
-    icon: "shield_lock",
-    title: "End-to-End Secure",
-    desc: "Enterprise-grade encryption keeps every conversation private.",
+    icon: "closed_caption",
+    title: "Live Transcription",
+    desc: "Get real-time captions for every participant.",
     gradient: "linear-gradient(135deg, #34d399, #10b981)"
   },
   {
@@ -134,9 +134,9 @@ export default function LandingPage() {
               </div>
             ))}
           </div>
-          <p className="text-xs ml-2" style={{ color: 'rgba(255,255,255,0.35)' }}>
+          {/* <p className="text-xs ml-2" style={{ color: 'rgba(255,255,255,0.35)' }}>
             Trusted by <span className="text-white/60 font-medium">2,000+</span> teams
-          </p>
+          </p> */}
         </div>
 
         {/* Stats */}

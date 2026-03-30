@@ -1,14 +1,26 @@
 import { Server } from 'socket.io';
 import { User } from '../models/user.model.js';
+import { MeetingSummary } from '../models/meetingSummary.model.js';
+import { generateMeetingSummary } from '../services/meetingSummary.service.js';
+import {
+    startTranscriptionSession,
+    sendTranscriptionAudioChunk,
+    setTranscriptionShareEnabled,
+    stopTranscriptionSession,
+    getTranscriptionSessionState
+} from './transcriptionManager.js';
 
 const connections = new Map();
 const messages = new Map();
+const transcriptHistory = new Map(); // roomKey -> final transcript lines
 const timeOnline = new Map();
 const roomStartTimes = new Map();
 const roomAccessModes = new Map(); // roomKey -> 'guest' | 'member'
 const socketRooms = new Map(); // socketId -> roomKey
 const usernames = new Map(); // socketId -> username
 const mediaStates = new Map(); // socketId -> { audio, video }
+const roomParticipants = new Map(); // roomKey -> Map<socketId, participant>
+const roomEventLogs = new Map(); // roomKey -> event[]
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
 const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
     .split(',')
@@ -74,6 +86,125 @@ export const connectToSocket = (server) => {
         return states;
     };
 
+    const ensureRoomTracking = (roomKey) => {
+        if (!roomParticipants.has(roomKey)) {
+            roomParticipants.set(roomKey, new Map());
+        }
+        if (!roomEventLogs.has(roomKey)) {
+            roomEventLogs.set(roomKey, []);
+        }
+    };
+
+    const appendRoomEvent = (roomKey, event) => {
+        ensureRoomTracking(roomKey);
+        const logs = roomEventLogs.get(roomKey);
+        logs.push({
+            ...event,
+            timestamp: event?.timestamp || Date.now()
+        });
+        if (logs.length > 1200) {
+            logs.splice(0, logs.length - 1200);
+        }
+    };
+
+    const upsertRoomParticipant = (roomKey, socketId, username) => {
+        ensureRoomTracking(roomKey);
+        const participants = roomParticipants.get(roomKey);
+        if (!participants.has(socketId)) {
+            participants.set(socketId, {
+                socketId,
+                username,
+                joinedAt: new Date(),
+                leftAt: null
+            });
+            return;
+        }
+
+        const current = participants.get(socketId);
+        current.username = username || current.username;
+    };
+
+    const markParticipantLeft = (roomKey, socketId) => {
+        const participants = roomParticipants.get(roomKey);
+        if (!participants) return null;
+        const current = participants.get(socketId);
+        if (!current) return null;
+        current.leftAt = current.leftAt || new Date();
+        return current;
+    };
+
+    const buildRoomSummarySnapshot = (roomKey) => {
+        const sessionStartMs = roomStartTimes.get(roomKey) || Date.now();
+        const sessionEnd = new Date();
+        const sessionStart = new Date(sessionStartMs);
+        const durationSeconds = Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
+
+        const participantsList = Array.from((roomParticipants.get(roomKey) || new Map()).values()).map((participant) => ({
+            socketId: participant.socketId,
+            username: participant.username,
+            joinedAt: participant.joinedAt,
+            leftAt: participant.leftAt || sessionEnd
+        }));
+
+        const transcriptList = (transcriptHistory.get(roomKey) || []).map((line) => ({ ...line }));
+        const chatList = (messages.get(roomKey) || []).map((message) => ({ ...message }));
+        const eventList = (roomEventLogs.get(roomKey) || []).map((event) => ({ ...event }));
+
+        return {
+            meetingCode: roomKey,
+            roomMode: roomAccessModes.get(roomKey) || (isGuestRoom(roomKey) ? 'guest' : 'member'),
+            sessionStart,
+            sessionEnd,
+            durationSeconds,
+            participants: participantsList,
+            transcript: transcriptList,
+            chatMessages: chatList,
+            eventLog: eventList
+        };
+    };
+
+    const persistRoomSummary = async (snapshot) => {
+        const summaryDoc = await MeetingSummary.create({
+            meetingCode: snapshot.meetingCode,
+            roomMode: snapshot.roomMode,
+            sessionStart: snapshot.sessionStart,
+            sessionEnd: snapshot.sessionEnd,
+            durationSeconds: snapshot.durationSeconds,
+            participants: snapshot.participants,
+            transcript: snapshot.transcript,
+            chatMessages: snapshot.chatMessages,
+            eventLog: snapshot.eventLog,
+            summaryStatus: 'pending'
+        });
+
+        try {
+            const { model, summary } = await generateMeetingSummary(snapshot);
+            await MeetingSummary.findByIdAndUpdate(summaryDoc._id, {
+                summaryStatus: 'ready',
+                summaryModel: model,
+                summaryPayload: summary,
+                summaryError: ''
+            });
+        } catch (error) {
+            await MeetingSummary.findByIdAndUpdate(summaryDoc._id, {
+                summaryStatus: 'failed',
+                summaryError: error?.message || 'Summary generation failed'
+            });
+            console.error(`[Summary Error] ${snapshot.meetingCode}:`, error?.message || error);
+        }
+    };
+
+    const appendTranscriptHistory = (roomKey, line) => {
+        if (!transcriptHistory.has(roomKey)) {
+            transcriptHistory.set(roomKey, []);
+        }
+        const items = transcriptHistory.get(roomKey);
+        items.push(line);
+        if (items.length > 100) {
+            items.splice(0, items.length - 100);
+        }
+    };
+
     io.on('connection', (socket) => {
         console.log(`[Socket] Connected: ${socket.id}`);
 
@@ -129,6 +260,13 @@ export const connectToSocket = (server) => {
                     connections.set(roomKey, []);
                     roomStartTimes.set(roomKey, Date.now());
                     roomAccessModes.set(roomKey, roomMode);
+                    ensureRoomTracking(roomKey);
+                    appendRoomEvent(roomKey, {
+                        type: 'meeting-started',
+                        username: verifiedUsername,
+                        socketId: socket.id,
+                        metadata: { roomMode }
+                    });
                 }
 
                 const roomClients = connections.get(roomKey);
@@ -139,6 +277,13 @@ export const connectToSocket = (server) => {
                 timeOnline.set(socket.id, Date.now());
                 socketRooms.set(socket.id, roomKey);
                 usernames.set(socket.id, verifiedUsername);
+                upsertRoomParticipant(roomKey, socket.id, verifiedUsername);
+                appendRoomEvent(roomKey, {
+                    type: 'participant-joined',
+                    username: verifiedUsername,
+                    socketId: socket.id,
+                    metadata: { participants: roomClients.length }
+                });
 
                 socket.join(roomKey);
 
@@ -158,6 +303,10 @@ export const connectToSocket = (server) => {
                     messages.get(roomKey).forEach((msg) => {
                         io.to(socket.id).emit('chat-message', msg.data, msg.sender, msg.socketId);
                     });
+                }
+
+                if (transcriptHistory.has(roomKey)) {
+                    io.to(socket.id).emit('transcript-history', transcriptHistory.get(roomKey));
                 }
             } catch (error) {
                 console.error('[Socket Join Error]', error.message);
@@ -185,6 +334,12 @@ export const connectToSocket = (server) => {
             };
 
             messages.get(room).push(msgObj);
+            appendRoomEvent(room, {
+                type: 'chat-message',
+                username: sender,
+                socketId: socket.id,
+                metadata: { text: data }
+            });
             broadcastToRoom(room, 'chat-message', data, sender, socket.id);
         });
 
@@ -219,6 +374,12 @@ export const connectToSocket = (server) => {
         socket.on('reaction', (emoji, username) => {
             const room = findRoom(socket.id);
             if (!room) return;
+            appendRoomEvent(room, {
+                type: 'reaction',
+                username,
+                socketId: socket.id,
+                metadata: { emoji }
+            });
             broadcastToRoom(room, 'reaction', emoji, username, socket.id);
         });
 
@@ -239,13 +400,159 @@ export const connectToSocket = (server) => {
         socket.on('raise-hand', (username) => {
             const room = findRoom(socket.id);
             if (!room) return;
+            appendRoomEvent(room, {
+                type: 'raise-hand',
+                username,
+                socketId: socket.id
+            });
             broadcastToRoom(room, 'raise-hand', username, socket.id);
         });
 
         socket.on('lower-hand', () => {
             const room = findRoom(socket.id);
             if (!room) return;
+            appendRoomEvent(room, {
+                type: 'lower-hand',
+                username: usernames.get(socket.id) || 'Guest',
+                socketId: socket.id
+            });
             broadcastToRoom(room, 'lower-hand', socket.id);
+        });
+
+        // --- Live Transcription (Deepgram) ---
+        socket.on('transcription-start', async (payload = {}) => {
+            const room = findRoom(socket.id);
+            if (!room) {
+                io.to(socket.id).emit('transcription-error', { message: 'Join a meeting before starting transcription' });
+                return;
+            }
+
+            const username = usernames.get(socket.id) || 'Guest';
+            const requestedLanguage = typeof payload.language === 'string' && payload.language.trim()
+                ? payload.language.trim()
+                : undefined;
+
+            try {
+                const state = await startTranscriptionSession({
+                    socketId: socket.id,
+                    roomKey: room,
+                    username,
+                    shareEnabled: Boolean(payload.shareEnabled),
+                    language: requestedLanguage,
+                    onSegment: ({ text, isFinal, speechFinal, timestamp, shareEnabled }) => {
+                        const segmentPayload = {
+                            speakerSocketId: socket.id,
+                            speakerName: username,
+                            text,
+                            isFinal,
+                            speechFinal,
+                            timestamp
+                        };
+
+                        // Always show own transcription locally.
+                        io.to(socket.id).emit('transcript-segment', segmentPayload);
+
+                        if (shareEnabled) {
+                            const roomClients = connections.get(room) || [];
+                            roomClients.forEach((clientId) => {
+                                if (clientId !== socket.id) {
+                                    io.to(clientId).emit('transcript-segment', segmentPayload);
+                                }
+                            });
+
+                            if (isFinal) {
+                                appendTranscriptHistory(room, segmentPayload);
+                            }
+                        }
+                    },
+                    onError: (error) => {
+                        io.to(socket.id).emit('transcription-error', {
+                            message: error?.message || 'Transcription connection failed'
+                        });
+                    }
+                });
+
+                io.to(socket.id).emit('transcription-state', state);
+                appendRoomEvent(room, {
+                    type: 'transcription-start',
+                    username,
+                    socketId: socket.id,
+                    metadata: { shareEnabled: state.shareEnabled }
+                });
+                broadcastToRoom(room, 'transcription-share-state', {
+                    socketId: socket.id,
+                    username,
+                    shareEnabled: state.shareEnabled
+                });
+            } catch (error) {
+                io.to(socket.id).emit('transcription-error', {
+                    message: error?.message || 'Unable to start transcription'
+                });
+            }
+        });
+
+        socket.on('transcription-audio-chunk', (chunk) => {
+            const state = getTranscriptionSessionState(socket.id);
+            if (!state.active) return;
+
+            const chunkSize = Buffer.isBuffer(chunk)
+                ? chunk.byteLength
+                : (chunk?.byteLength || chunk?.length || 0);
+
+            if (chunkSize > 512000) {
+                io.to(socket.id).emit('transcription-error', { message: 'Audio chunk too large' });
+                return;
+            }
+
+            const sent = sendTranscriptionAudioChunk(socket.id, chunk);
+            if (!sent) {
+                io.to(socket.id).emit('transcription-error', { message: 'Failed to stream audio chunk' });
+            }
+        });
+
+        socket.on('transcription-share-toggle', (payload = {}) => {
+            const room = findRoom(socket.id);
+            if (!room) return;
+
+            const nextState = setTranscriptionShareEnabled(socket.id, Boolean(payload.shareEnabled));
+            if (!nextState) return;
+
+            const username = usernames.get(socket.id) || 'Guest';
+            io.to(socket.id).emit('transcription-state', nextState);
+            appendRoomEvent(room, {
+                type: 'transcription-share-toggle',
+                username,
+                socketId: socket.id,
+                metadata: { shareEnabled: nextState.shareEnabled }
+            });
+            broadcastToRoom(room, 'transcription-share-state', {
+                socketId: socket.id,
+                username,
+                shareEnabled: nextState.shareEnabled
+            });
+        });
+
+        socket.on('transcription-stop', () => {
+            const room = findRoom(socket.id);
+            const stopped = stopTranscriptionSession(socket.id);
+            io.to(socket.id).emit('transcription-state', {
+                active: false,
+                shareEnabled: false
+            });
+
+            if (stopped && room) {
+                const username = usernames.get(socket.id) || 'Guest';
+                appendRoomEvent(room, {
+                    type: 'transcription-stop',
+                    username,
+                    socketId: socket.id
+                });
+                broadcastToRoom(room, 'transcription-share-state', {
+                    socketId: socket.id,
+                    username,
+                    shareEnabled: false
+                });
+            }
         });
 
         // --- Disconnect ---
@@ -254,6 +561,7 @@ export const connectToSocket = (server) => {
                 ? Math.abs(Date.now() - timeOnline.get(socket.id))
                 : 0;
             console.log(`[Socket] Disconnected: ${socket.id} (online ${Math.round(onlineTime / 1000)}s)`);
+            stopTranscriptionSession(socket.id);
             timeOnline.delete(socket.id);
             socketRooms.delete(socket.id);
             usernames.delete(socket.id);
@@ -262,6 +570,14 @@ export const connectToSocket = (server) => {
             for (const [roomKey, roomClients] of connections) {
                 const idx = roomClients.indexOf(socket.id);
                 if (idx !== -1) {
+                    const leftParticipant = markParticipantLeft(roomKey, socket.id);
+                    appendRoomEvent(roomKey, {
+                        type: 'participant-left',
+                        username: leftParticipant?.username || usernames.get(socket.id) || 'Guest',
+                        socketId: socket.id,
+                        metadata: { participants: Math.max(0, roomClients.length - 1) }
+                    });
+
                     roomClients.forEach((clientId) => {
                         if (clientId !== socket.id) {
                             io.to(clientId).emit('user-left', socket.id);
@@ -271,8 +587,16 @@ export const connectToSocket = (server) => {
                     roomClients.splice(idx, 1);
 
                     if (roomClients.length === 0) {
+                        const snapshot = buildRoomSummarySnapshot(roomKey);
+                        persistRoomSummary(snapshot).catch((error) => {
+                            console.error(`[Summary Persist Error] ${roomKey}:`, error?.message || error);
+                        });
+
                         connections.delete(roomKey);
                         messages.delete(roomKey);
+                        transcriptHistory.delete(roomKey);
+                        roomParticipants.delete(roomKey);
+                        roomEventLogs.delete(roomKey);
                         roomStartTimes.delete(roomKey);
                         roomAccessModes.delete(roomKey);
                     }

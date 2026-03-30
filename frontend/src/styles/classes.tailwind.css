@@ -312,7 +312,7 @@
 
   /* Feature cards */
   .feature-grid {
-    @apply grid grid-cols-1 md:grid-cols-3 gap-4 max-w-4xl mx-auto mt-20;
+    @apply grid grid-cols-1 md:grid-cols-3 gap-4 max-w-4xl mx-auto mt-3;
   }
 
   .feature-card {

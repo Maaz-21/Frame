@@ -23,7 +23,7 @@ const VARIANTS = {
     }
 };
 
-export default function Snackbar({ message, variant = 'info', isOpen, onClose, duration = 4000 }) {
+export default function Snackbar({ message, variant = 'info', isOpen, onClose, duration = 3000 }) {
     const [isVisible, setIsVisible] = useState(false);
     const [isExiting, setIsExiting] = useState(false);
 

@@ -6,7 +6,7 @@
 [![Docker](https://img.shields.io/badge/Containerized-Docker-2496ED?style=for-the-badge&logo=docker&logoColor=fff)](#docker-setup)
 [![Tailwind CSS](https://img.shields.io/badge/Styled%20With-Tailwind%20CSS-38BDF8?style=for-the-badge&logo=tailwindcss&logoColor=fff)](#tech-stack)
 
-**Frame** is a full-stack, real-time video conferencing application built on the **MERN stack** with **WebRTC** peer-to-peer communication and **Socket.IO** for live collaboration. It supports multi-participant video calls, in-meeting text chat, emoji reactions, hand-raise, typing indicators, screen sharing, and persistent meeting history — all served through a Dockerized, production-ready architecture.
+**Frame** is a full-stack, real-time video conferencing application built on the **MERN stack** with **WebRTC** peer-to-peer communication and **Socket.IO** for live collaboration. It supports multi-participant video calls, in-meeting text chat, emoji reactions, hand-raise, typing indicators, screen sharing, **live transcription (Deepgram)**, and **AI meeting summaries (Gemini)** — all served through a Dockerized, production-ready architecture.
 
 🌐 **Live Demo**: [https://frame-frontend.onrender.com](https://frame-frontend.onrender.com)  
 🐳 **Docker Hub**: [https://hub.docker.com/r/maazk31/frame](https://hub.docker.com/r/maazk31/frame)
@@ -36,6 +36,8 @@ Frame delivers a browser-based video conferencing experience with no plugin inst
 
 - Peer-to-peer WebRTC video/audio (Twilio STUN/ICE with Google STUN fallback)
 - Socket.IO-powered real-time signaling, chat, and presence
+- Deepgram-powered live captions with optional transcription sharing
+- Gemini-powered post-meeting summaries with discussion points, decisions, and action items
 - MongoDB-backed user accounts and meeting history
 
 ---
@@ -66,12 +68,26 @@ Frame delivers a browser-based video conferencing experience with no plugin inst
 - **Media state sync** — each participant's audio/video on/off state is broadcast on change
 - **Meeting start time** — server records room creation timestamp and sends it to late joiners so everyone sees the same elapsed meeting timer
 
+### 📝 Live Transcription (Deepgram)
+- **Real-time speech-to-text** using Deepgram Streaming API (`@deepgram/sdk`) for in-meeting captions
+- **Caption controls** — start/stop live captions and toggle whether your transcript is shared with others
+- **Live subtitle strip** — latest spoken segment shown as on-video subtitles
+- **Transcript panel** — rolling transcript with final and interim segments for active speakers
+- **Transcript history replay** — new joiners receive recent final transcript lines for context
+
 ### 📋 Meeting Management
 - **Create meeting** — generates a 6-character alphanumeric room code shown in a copy-friendly card
 - **Join meeting** — enter any existing room code directly from the dashboard
 - **Meeting history** — every meeting a user joins is saved to MongoDB and displayed grouped by date (Today, Yesterday, older dates) with a one-click **Rejoin** button
 - **Session persistence** — page refresh inside a meeting reconnects the user to the same room via `sessionStorage`
 - **Meeting duration tracking** — elapsed time stored in `localStorage` and shown in history
+
+### 🧠 AI Meeting Summaries (Gemini)
+- **Automatic summary generation** when the last participant leaves a room
+- **Gemini structured output** includes meeting topic, overview, key discussion points, decisions, blockers, conclusions, and action items
+- **History integration** — each meeting row provides a summary modal with status-aware UI (`pending`, `ready`, `failed`)
+- **Regenerate summary** endpoint and UI action for retrying failed or stale summaries
+- **Session artifact capture** — participants, chat messages, transcript lines, and event logs are persisted for summarization
 
 ### 🔔 UI / UX
 - **Audio notifications** — distinct sounds for join, leave, new message, reaction, and hand-raise events
@@ -85,7 +101,8 @@ Frame delivers a browser-based video conferencing experience with no plugin inst
 - **Health check endpoint** — `GET /api/health` for uptime monitoring
 - **Meeting status check** — `GET /api/users/meeting-status/:meetingCode` lets the client verify whether a room is currently active before joining
 - **MongoDB persistence** — user accounts and full meeting history stored in Atlas-compatible MongoDB
-- **In-memory room state** — `connections`, `messages`, `usernames`, `mediaStates`, `roomStartTimes`, and `timeOnline` maps held in the Node.js process for zero-latency real-time operations
+- **Meeting summary persistence** — dedicated summary documents store session artifacts + AI-generated payloads
+- **In-memory room state** — `connections`, `messages`, `usernames`, `mediaStates`, `roomStartTimes`, `roomParticipants`, `roomEventLogs`, transcript history, and `timeOnline` maps held in the Node.js process for zero-latency real-time operations
 
 ---
 
@@ -97,6 +114,8 @@ Frame delivers a browser-based video conferencing experience with no plugin inst
 | **Backend** | Node.js, Express 5 |
 | **Real-Time** | Socket.IO v4 (server + client) |
 | **Video / Audio** | WebRTC (`RTCPeerConnection`, `getUserMedia`, `getDisplayMedia`) |
+| **Speech-to-Text** | Deepgram Streaming API (`@deepgram/sdk`) |
+| **AI Summarization** | Google Gemini API (Google AI Studio key) |
 | **Database** | MongoDB (Mongoose v8) |
 | **Authentication** | Token-based (crypto hex), bcrypt |
 | **ICE / STUN** | Twilio Programmable Video + Google STUN fallback |
@@ -122,16 +141,22 @@ Frame delivers a browser-based video conferencing experience with no plugin inst
 │              Express 5  +  Socket.IO Server              │
 │                                                          │
 │  /api/users/*  ──→  Controllers ──→  MongoDB (Mongoose)  │
+│      │                                   │               │
+│      ├─ meeting summary fetch/regenerate │               │
+│      └─ Deepgram + Gemini integrations   │               │
 │                                                          │
 │  Socket events:  join-call · signal · chat-message       │
 │                  typing · reaction · media-state         │
 │                  raise-hand · lower-hand                 │
+│                  transcription-start/stop/chunk/share    │
 │                  meeting-start-time                      │
 └─────────────────────────────────────────────────────────┘
        │
+       ├──────────────► Deepgram Streaming API (captions)
+       ├──────────────► Gemini API (meeting summaries)
        ▼
 ┌─────────────┐
-│  MongoDB    │  ← user accounts + meeting history
+│  MongoDB    │  ← users, meeting history, meeting summaries
 └─────────────┘
 ```
 
@@ -149,16 +174,20 @@ Frame/
 │   │   ├── config/
 │   │   │   └── DBconnect.js          # Mongoose MongoDB connection
 │   │   ├── controllers/
-│   │   │   └── user.controller.js    # Auth (register/login) + meeting history
+│   │   │   └── user.controller.js    # Auth + meeting history + summary APIs
 │   │   ├── middleware/
 │   │   │   └── auth.middleware.js    # Token validation middleware
 │   │   ├── models/
 │   │   │   ├── user.model.js         # User schema (name, username, password, token)
-│   │   │   └── meeting.model.js      # Meeting history schema (user_id, meetingCode, date)
+│   │   │   ├── meeting.model.js      # Meeting history schema (user_id, meetingCode, date)
+│   │   │   └── meetingSummary.model.js # Summary schema + session artifacts
 │   │   ├── routes/
 │   │   │   └── user.routes.js        # API route definitions
+│   │   ├── services/
+│   │   │   └── meetingSummary.service.js # Gemini summarization service
 │   │   └── socket/
-│   │       └── socketManager.js      # All Socket.IO event handlers + room state
+│   │       ├── socketManager.js      # Socket events + room state + summary capture
+│   │       └── transcriptionManager.js # Deepgram session lifecycle manager
 │   ├── Dockerfile
 │   └── package.json
 ├── frontend/
@@ -255,6 +284,15 @@ FRONTEND_URLS=http://localhost:3000
 # Twilio (optional — Google STUN used as fallback when absent)
 TWILIO_ACCOUNT_SID=your_twilio_account_sid
 TWILIO_AUTH_TOKEN=your_twilio_auth_token
+
+# Deepgram (live transcription)
+DEEPGRAM_API_KEY=your_deepgram_api_key
+DEEPGRAM_MODEL=nova-3
+DEEPGRAM_LANGUAGE=en-US
+
+# Gemini (Google AI Studio, meeting summary generation)
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_SUMMARY_MODEL=gemini-2.0-flash
 ```
 
 ### Frontend — `frontend/.env`
