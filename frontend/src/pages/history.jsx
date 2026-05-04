@@ -25,7 +25,7 @@ function groupByDate(meetings) {
 }
 
 function History() {
-    const { getHistoryOfUser, getMeetingSummary, regenerateMeetingSummary } = useContext(AuthContext);
+    const { getHistoryOfUser, getMeetingSummary, regenerateMeetingSummary, searchMeetingIntelligence } = useContext(AuthContext);
     const [meetings, setMeetings] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
@@ -35,6 +35,11 @@ function History() {
     const [summaryMeetingCode, setSummaryMeetingCode] = useState('');
     const [summaryModalOpen, setSummaryModalOpen] = useState(false);
     const [summaryData, setSummaryData] = useState(null);
+    const [semanticQuery, setSemanticQuery] = useState('');
+    const [semanticResults, setSemanticResults] = useState([]);
+    const [semanticMeta, setSemanticMeta] = useState(null);
+    const [semanticLoading, setSemanticLoading] = useState(false);
+    const [semanticError, setSemanticError] = useState('');
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -55,6 +60,16 @@ function History() {
         return new Date(dateString).toLocaleTimeString('en-US', {
             hour: '2-digit',
             minute: '2-digit'
+        });
+    };
+
+    const formatShortDate = (value) => {
+        if (!value) return '';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return date.toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric'
         });
     };
 
@@ -127,6 +142,81 @@ function History() {
         } finally {
             setSummaryLoading(false);
         }
+    };
+
+    const handleSemanticSearch = async () => {
+        const query = semanticQuery.trim();
+        if (!query) {
+            setSemanticResults([]);
+            setSemanticMeta(null);
+            setSemanticError('');
+            return;
+        }
+
+        setSemanticLoading(true);
+        setSemanticError('');
+
+        try {
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+            const response = await searchMeetingIntelligence(query, { timezone, limit: 6 });
+            setSemanticResults(response?.results || []);
+            setSemanticMeta(response?.parsedQuery || null);
+        } catch (error) {
+            setSemanticError(error?.response?.data?.message || 'Unable to search meetings');
+        } finally {
+            setSemanticLoading(false);
+        }
+    };
+
+    const renderInsightBlock = (result) => {
+        const insights = result?.insights || {};
+        if (Array.isArray(insights.actionItems) && insights.actionItems.length > 0) {
+            return (
+                <div className="mt-3">
+                    <p className="text-[11px] uppercase tracking-wide mb-2" style={{ color: 'rgba(255,255,255,0.35)' }}>Action Items</p>
+                    {renderActionItems(insights.actionItems)}
+                </div>
+            );
+        }
+
+        if (Array.isArray(insights.decisions) && insights.decisions.length > 0) {
+            return (
+                <div className="mt-3">
+                    <p className="text-[11px] uppercase tracking-wide mb-2" style={{ color: 'rgba(255,255,255,0.35)' }}>Decisions</p>
+                    {renderSummaryList(insights.decisions)}
+                </div>
+            );
+        }
+
+        if (Array.isArray(insights.mainDiscussionPoints) && insights.mainDiscussionPoints.length > 0) {
+            return (
+                <div className="mt-3">
+                    <p className="text-[11px] uppercase tracking-wide mb-2" style={{ color: 'rgba(255,255,255,0.35)' }}>Discussion</p>
+                    {renderSummaryList(insights.mainDiscussionPoints)}
+                </div>
+            );
+        }
+
+        if (Array.isArray(insights.blockersOrRisks) && insights.blockersOrRisks.length > 0) {
+            return (
+                <div className="mt-3">
+                    <p className="text-[11px] uppercase tracking-wide mb-2" style={{ color: 'rgba(255,255,255,0.35)' }}>Risks</p>
+                    {renderSummaryList(insights.blockersOrRisks)}
+                </div>
+            );
+        }
+
+        if (typeof insights.shortOverview === 'string' && insights.shortOverview.trim()) {
+            return (
+                <div className="mt-3">
+                    <p className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.78)' }}>
+                        {insights.shortOverview}
+                    </p>
+                </div>
+            );
+        }
+
+        return null;
     };
 
     const handleRegenerateSummary = async () => {
@@ -219,6 +309,106 @@ function History() {
                             />
                         </div>
                     )}
+                </div>
+
+                <div className="rounded-2xl p-5 mb-8 fade-in"
+                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div>
+                            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                                <span className="material-symbols-rounded text-lg" style={{ color: '#34d399' }}>auto_awesome</span>
+                                Meeting Intelligence
+                            </h2>
+                            <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                                Ask about decisions, payments, deployment issues, or authentication.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px]"
+                            style={{ color: 'rgba(255,255,255,0.35)' }}>
+                            {semanticMeta?.intent && (
+                                <span className="px-2 py-0.5 rounded-full"
+                                    style={{ background: 'rgba(255,255,255,0.06)' }}>
+                                    Intent: {semanticMeta.intent.replace('_', ' ')}
+                                </span>
+                            )}
+                            {(semanticMeta?.fromDate || semanticMeta?.toDate) && (
+                                <span className="px-2 py-0.5 rounded-full"
+                                    style={{ background: 'rgba(255,255,255,0.06)' }}>
+                                    Range: {formatShortDate(semanticMeta?.fromDate)}{semanticMeta?.toDate ? ` - ${formatShortDate(semanticMeta.toDate)}` : ''}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                        <input
+                            value={semanticQuery}
+                            onChange={(e) => setSemanticQuery(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSemanticSearch()}
+                            placeholder="Ask: What did we decide about payments last week?"
+                            className="input-field flex-1"
+                        />
+                        <button
+                            onClick={handleSemanticSearch}
+                            disabled={!semanticQuery.trim() || semanticLoading}
+                            className="cta-glow text-xs px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed">
+                            {semanticLoading ? 'Searching...' : 'Search'}
+                        </button>
+                    </div>
+
+                    {semanticError && (
+                        <div className="mt-3 rounded-lg px-3 py-2 text-xs"
+                            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}>
+                            {semanticError}
+                        </div>
+                    )}
+
+                    {semanticLoading ? (
+                        <div className="flex items-center gap-2 mt-4 text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                            <div className="w-4 h-4 border-2 border-white/10 border-t-emerald-400 rounded-full animate-spin" />
+                            Searching your meeting history...
+                        </div>
+                    ) : semanticResults.length > 0 ? (
+                        <div className="mt-4 space-y-3">
+                            {semanticResults.map((result, idx) => (
+                                <div key={`${result.meetingCode}-${idx}`} className="rounded-xl p-4"
+                                    style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                                        <div>
+                                            <p className="text-sm font-semibold text-white">
+                                                {result?.summaryPayload?.meetingTopic || 'Meeting Summary'}
+                                            </p>
+                                            <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                                                Code: {result.meetingCode} · {formatShortDate(result.sessionStart)}
+                                            </p>
+                                        </div>
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full"
+                                            style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}>
+                                            Score: {typeof result.score === 'number' ? result.score.toFixed(3) : 'n/a'}
+                                        </span>
+                                    </div>
+
+                                    <p className="text-xs mt-2 leading-relaxed" style={{ color: 'rgba(255,255,255,0.75)' }}>
+                                        {result?.summaryPayload?.shortOverview || 'Summary not available yet.'}
+                                    </p>
+
+                                    {renderInsightBlock(result)}
+
+                                    <div className="mt-3 flex gap-2">
+                                        <button onClick={() => openSummaryModal(result.meetingCode)}
+                                            className="cta-dark text-xs px-3 py-1.5 flex items-center gap-1">
+                                            <span className="material-symbols-rounded text-sm">description</span>
+                                            View Summary
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : semanticQuery.trim() ? (
+                        <p className="text-xs mt-4" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                            No matching meetings found. Try a different phrasing.
+                        </p>
+                    ) : null}
                 </div>
 
                 {/* Content */}

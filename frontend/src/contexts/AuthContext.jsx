@@ -103,6 +103,25 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    const searchMeetingIntelligence = async (query, options = {}) => {
+        try {
+            const token = localStorage.getItem('token');
+            const request = await client.get('/meeting-search', {
+                params: {
+                    token,
+                    q: query,
+                    limit: options.limit,
+                    from: options.from,
+                    to: options.to,
+                    timezone: options.timezone
+                }
+            });
+            return request.data;
+        } catch (error) {
+            throw error;
+        }
+    };
+
 
     const data = {
         userData,
@@ -111,6 +130,7 @@ export const AuthProvider = ({ children }) => {
         getHistoryOfUser,
         getMeetingSummary,
         regenerateMeetingSummary,
+        searchMeetingIntelligence,
         handleRegister,
         handleLogin
     }
