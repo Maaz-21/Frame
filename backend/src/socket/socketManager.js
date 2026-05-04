@@ -2,6 +2,7 @@ import { Server } from 'socket.io';
 import { User } from '../models/user.model.js';
 import { MeetingSummary } from '../models/meetingSummary.model.js';
 import { generateMeetingSummary } from '../services/meetingSummary.service.js';
+import { upsertMeetingEmbedding } from '../services/meetingEmbedding.service.js';
 import {
     startTranscriptionSession,
     sendTranscriptionAudioChunk,
@@ -26,10 +27,49 @@ const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL ||
     .split(',')
     .map((origin) => normalizeOrigin(origin))
     .filter(Boolean);
+const isGuestRoom = (meetingCode = '') => meetingCode.toLowerCase().startsWith('g-');
+
+const buildRoomSummarySnapshot = (roomKey) => {
+    const sessionStartMs = roomStartTimes.get(roomKey) || Date.now();
+    const sessionEnd = new Date();
+    const sessionStart = new Date(sessionStartMs);
+    const durationSeconds = Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
+
+    const participantsList = Array.from((roomParticipants.get(roomKey) || new Map()).values()).map((participant) => ({
+        socketId: participant.socketId,
+        username: participant.username,
+        joinedAt: participant.joinedAt,
+        leftAt: participant.leftAt || sessionEnd
+    }));
+
+    const transcriptList = (transcriptHistory.get(roomKey) || []).map((line) => ({ ...line }));
+    const chatList = (messages.get(roomKey) || []).map((message) => ({ ...message }));
+    const eventList = (roomEventLogs.get(roomKey) || []).map((event) => ({ ...event }));
+
+    return {
+        meetingCode: roomKey,
+        roomMode: roomAccessModes.get(roomKey) || (isGuestRoom(roomKey) ? 'guest' : 'member'),
+        sessionStart,
+        sessionEnd,
+        durationSeconds,
+        participants: participantsList,
+        transcript: transcriptList,
+        chatMessages: chatList,
+        eventLog: eventList
+    };
+};
 
 export const isMeetingActive = (meetingCode) => {
     const clients = connections.get((meetingCode || '').trim());
     return Array.isArray(clients) && clients.length > 0;
+};
+
+export const getActiveMeetingSnapshot = (meetingCode) => {
+    const roomKey = (meetingCode || '').trim();
+    if (!roomKey) return null;
+    const clients = connections.get(roomKey);
+    if (!Array.isArray(clients) || clients.length === 0) return null;
+    return buildRoomSummarySnapshot(roomKey);
 };
 
 export const connectToSocket = (server) => {
@@ -56,8 +96,6 @@ export const connectToSocket = (server) => {
         }
         return null;
     };
-
-    const isGuestRoom = (meetingCode = '') => meetingCode.toLowerCase().startsWith('g-');
 
     // Helper: broadcast to room
     const broadcastToRoom = (roomKey, event, ...args) => {
@@ -133,36 +171,6 @@ export const connectToSocket = (server) => {
         return current;
     };
 
-    const buildRoomSummarySnapshot = (roomKey) => {
-        const sessionStartMs = roomStartTimes.get(roomKey) || Date.now();
-        const sessionEnd = new Date();
-        const sessionStart = new Date(sessionStartMs);
-        const durationSeconds = Math.max(0, Math.floor((sessionEnd.getTime() - sessionStart.getTime()) / 1000));
-
-        const participantsList = Array.from((roomParticipants.get(roomKey) || new Map()).values()).map((participant) => ({
-            socketId: participant.socketId,
-            username: participant.username,
-            joinedAt: participant.joinedAt,
-            leftAt: participant.leftAt || sessionEnd
-        }));
-
-        const transcriptList = (transcriptHistory.get(roomKey) || []).map((line) => ({ ...line }));
-        const chatList = (messages.get(roomKey) || []).map((message) => ({ ...message }));
-        const eventList = (roomEventLogs.get(roomKey) || []).map((event) => ({ ...event }));
-
-        return {
-            meetingCode: roomKey,
-            roomMode: roomAccessModes.get(roomKey) || (isGuestRoom(roomKey) ? 'guest' : 'member'),
-            sessionStart,
-            sessionEnd,
-            durationSeconds,
-            participants: participantsList,
-            transcript: transcriptList,
-            chatMessages: chatList,
-            eventLog: eventList
-        };
-    };
-
     const persistRoomSummary = async (snapshot) => {
         const summaryDoc = await MeetingSummary.create({
             meetingCode: snapshot.meetingCode,
@@ -185,6 +193,14 @@ export const connectToSocket = (server) => {
                 summaryPayload: summary,
                 summaryError: ''
             });
+            try {
+                await upsertMeetingEmbedding({
+                    summaryDoc,
+                    summaryPayload: summary
+                });
+            } catch (error) {
+                console.error(`[Embedding Error] ${snapshot.meetingCode}:`, error?.message || error);
+            }
         } catch (error) {
             await MeetingSummary.findByIdAndUpdate(summaryDoc._id, {
                 summaryStatus: 'failed',
@@ -200,9 +216,6 @@ export const connectToSocket = (server) => {
         }
         const items = transcriptHistory.get(roomKey);
         items.push(line);
-        if (items.length > 100) {
-            items.splice(0, items.length - 100);
-        }
     };
 
     io.on('connection', (socket) => {

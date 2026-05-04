@@ -7,6 +7,7 @@ import {
 	getMeetingStatus,
 	getIceServers,
 	getMeetingSummary,
+	searchMeetingIntelligence,
 	regenerateMeetingSummary
 } from '../controllers/user.controller.js';
 import { authenticateToken } from '../middleware/auth.middleware.js';
@@ -23,6 +24,7 @@ router.get('/ice-servers', getIceServers);
 router.post('/add_to_activity', authenticateToken, addToHistory);
 router.get('/get_all_activity', authenticateToken, getUserHistory);
 router.get('/meeting-summary/:meetingCode', authenticateToken, getMeetingSummary);
+router.get('/meeting-search', authenticateToken, searchMeetingIntelligence);
 router.post('/meeting-summary/:meetingCode/regenerate', authenticateToken, regenerateMeetingSummary);
 
 export default router;
