@@ -2,7 +2,7 @@ import request from 'supertest';
 import httpStatus from 'http-status';
 import { app, start, stop } from '../src/app.js';
 import { createSocketClient, waitForEvent } from '../test/helpers/socket.js';
-import { cleanupTestData, disconnectTestDb } from '../test/helpers/db.js';
+import { connectTestDb, cleanupTestData, disconnectTestDb } from '../test/helpers/db.js';
 import { buildTestMeetingCode } from '../test/helpers/testData.js';
 import { waitForSummaryCompletion } from '../test/helpers/summary.js';
 
@@ -13,6 +13,7 @@ describe('Meeting status API', () => {
 
     beforeAll(async () => {
         process.env.PORT = '0';
+        await connectTestDb();
         const { server } = await start();
         const address = server.address();
         baseUrl = `http://localhost:${address.port}`;

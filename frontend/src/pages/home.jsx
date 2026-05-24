@@ -44,7 +44,7 @@ function HomeComponent() {
             }
         };
         fetchRecent();
-    }, []);
+    }, [getHistoryOfUser]);
 
     const handleJoinVideoCall = async () => {
         const code = meetingCode.trim();

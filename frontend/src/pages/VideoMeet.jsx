@@ -85,6 +85,9 @@ export default function VideoMeetComponent() {
     const transcriptionRecorderRef = useRef();
     const transcriptionStreamRef = useRef();
     const transcriptBottomRef = useRef();
+    const getMediaRef = useRef(null);
+    const getUserMediaRef = useRef(null);
+    const getDislayMediaRef = useRef(null);
 
     const fetchIceServers = useCallback(async () => {
         try {
@@ -180,24 +183,8 @@ export default function VideoMeetComponent() {
 
     // Auto-connect when askForUsername becomes false (handles both manual join and refresh)
     const hasMounted = useRef(false);
-    useEffect(() => {
-        if (!askForUsername && username) {
-            if (!hasMounted.current) {
-                hasMounted.current = true;
-                getMedia();
-            }
-        }
-    }, [askForUsername, username]);
-
     // ------ Permissions ------
-    useEffect(() => {
-        if (!permissionsChecked.current) {
-            permissionsChecked.current = true;
-            getPermissions();
-        }
-    }, []);
-
-    const getPermissions = async () => {
+    const getPermissions = useCallback(async () => {
         setScreenAvailable(!!navigator.mediaDevices.getDisplayMedia);
 
         if (!navigator?.mediaDevices?.getUserMedia) {
@@ -223,11 +210,27 @@ export default function VideoMeetComponent() {
                 variant: 'warning'
             });
         }
-    };
+    }, [attachStreamToVideoElement]);
+
+    useEffect(() => {
+        if (!askForUsername && username) {
+            if (!hasMounted.current) {
+                hasMounted.current = true;
+                getMediaRef.current();
+            }
+        }
+    }, [askForUsername, username]);
+
+    useEffect(() => {
+        if (!permissionsChecked.current) {
+            permissionsChecked.current = true;
+            getPermissions();
+        }
+    }, [getPermissions]);
 
     useEffect(() => {
         if (video !== undefined && audio !== undefined) {
-            getUserMedia();
+            getUserMediaRef.current();
         }
     }, [video, audio]);
 
@@ -541,6 +544,7 @@ export default function VideoMeetComponent() {
         setAudio(Boolean(audioAvailable));
         connectToSocketServer();
     };
+    getMediaRef.current = getMedia;
 
     // Issue #6: Use replaceTrack instead of addStream to prevent flickering
     const replaceStream = (stream) => {
@@ -696,6 +700,7 @@ export default function VideoMeetComponent() {
 
         tryGetMedia();
     };
+    getUserMediaRef.current = getUserMedia;
 
     const getDislayMedia = () => {
         if (screen) {
@@ -706,6 +711,7 @@ export default function VideoMeetComponent() {
             }
         }
     };
+    getDislayMediaRef.current = getDislayMedia;
 
     // Issue #6: Screen share uses replaceTrack for seamless switching
     const getDislayMediaSuccess = (stream) => {
@@ -1011,7 +1017,7 @@ export default function VideoMeetComponent() {
     }, [audio, video, askForUsername]);
 
     useEffect(() => {
-        if (screen !== undefined) getDislayMedia();
+        if (screen !== undefined) getDislayMediaRef.current();
     }, [screen]);
 
     useEffect(() => {
@@ -1105,25 +1111,25 @@ export default function VideoMeetComponent() {
     }, [showChat, messages]);
 
     // Resizer drag handlers
+    const onDrag = useCallback((e) => {
+        if (!isDraggingRef.current) return;
+        const container = containerRef.current;
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        setChatWidth(Math.min(Math.max(e.clientX - rect.left, 200), 600));
+    }, []);
+    const stopDrag = useCallback(() => {
+        isDraggingRef.current = false;
+        document.removeEventListener('mousemove', onDrag);
+        document.removeEventListener('mouseup', stopDrag);
+    }, [onDrag]);
     const startDrag = (e) => {
         e.preventDefault();
         isDraggingRef.current = true;
         document.addEventListener('mousemove', onDrag);
         document.addEventListener('mouseup', stopDrag);
     };
-    const onDrag = (e) => {
-        if (!isDraggingRef.current) return;
-        const container = containerRef.current;
-        if (!container) return;
-        const rect = container.getBoundingClientRect();
-        setChatWidth(Math.min(Math.max(e.clientX - rect.left, 200), 600));
-    };
-    const stopDrag = () => {
-        isDraggingRef.current = false;
-        document.removeEventListener('mousemove', onDrag);
-        document.removeEventListener('mouseup', stopDrag);
-    };
-    useEffect(() => () => stopDrag(), []);
+    useEffect(() => () => stopDrag(), [stopDrag]);
 
     const formatMsgTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 

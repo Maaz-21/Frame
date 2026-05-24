@@ -54,7 +54,7 @@ function History() {
             }
         };
         fetchHistory();
-    }, []);
+    }, [getHistoryOfUser]);
 
     const formatTime = (dateString) => {
         return new Date(dateString).toLocaleTimeString('en-US', {

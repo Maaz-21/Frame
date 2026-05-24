@@ -60,10 +60,15 @@ app.use((err, req, res, next) => {
     });
 });
 
+import mongoose from 'mongoose';
+
 // --- Start ---
 const start = async () => {
     if (started) return { server, io };
-    await connectToMongoDB();
+    // Skip real DB connection if already connected (e.g. tests use MongoMemoryServer)
+    if (mongoose.connection.readyState !== 1) {
+        await connectToMongoDB();
+    }
     io = connectToSocket(server);
     const port = resolvePort();
     await new Promise((resolve) => server.listen(port, resolve));

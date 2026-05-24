@@ -1,19 +1,27 @@
 import mongoose from 'mongoose';
-import { connectToMongoDB } from '../../src/config/DBconnect.js';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { User } from '../../src/models/user.model.js';
 import { Meeting } from '../../src/models/meeting.model.js';
 import { MeetingSummary } from '../../src/models/meetingSummary.model.js';
 import { MeetingEmbedding } from '../../src/models/meetingEmbedding.model.js';
 import { testPrefix, testRunId } from './testData.js';
 
+let mongoServer;
+
 export const connectTestDb = async () => {
     if (mongoose.connection.readyState === 1) return;
-    await connectToMongoDB();
+    mongoServer = await MongoMemoryServer.create();
+    const uri = mongoServer.getUri();
+    await mongoose.connect(uri);
 };
 
 export const disconnectTestDb = async () => {
     if (mongoose.connection.readyState !== 0) {
         await mongoose.connection.close();
+    }
+    if (mongoServer) {
+        await mongoServer.stop();
+        mongoServer = null;
     }
 };
 
