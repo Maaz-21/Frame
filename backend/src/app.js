@@ -12,10 +12,17 @@ import { connectToMongoDB } from './config/DBconnect.js';
 import { connectToSocket } from './socket/socketManager.js';
 import userRoutes from './routes/user.routes.js';
 
+const resolvePort = () => {
+    const raw = process.env.PORT;
+    if (raw === undefined || raw === '') return 8000;
+    const parsed = Number(raw);
+    return Number.isNaN(parsed) ? 8000 : parsed;
+};
+
 const app = express();
 const server = createServer(app);
-
-const PORT = process.env.PORT || 8000;
+let io = null;
+let started = false;
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
 const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000')
     .split(',')
@@ -55,14 +62,32 @@ app.use((err, req, res, next) => {
 
 // --- Start ---
 const start = async () => {
+    if (started) return { server, io };
     await connectToMongoDB();
-    connectToSocket(server);
-    server.listen(PORT, () => {
-        console.log(`🚀 Server running on port ${PORT}`);
-    });
+    io = connectToSocket(server);
+    const port = resolvePort();
+    await new Promise((resolve) => server.listen(port, resolve));
+    console.log(`🚀 Server running on port ${port}`);
+    started = true;
+    return { server, io };
 };
 
-start().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-});
+const stop = async () => {
+    if (io) {
+        await new Promise((resolve) => io.close(resolve));
+        io = null;
+    }
+    if (server.listening) {
+        await new Promise((resolve) => server.close(resolve));
+    }
+    started = false;
+};
+
+if (process.env.NODE_ENV !== 'test') {
+    start().catch((err) => {
+        console.error('Failed to start server:', err);
+        process.exit(1);
+    });
+}
+
+export { app, server, start, stop };

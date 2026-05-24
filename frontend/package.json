@@ -15,7 +15,7 @@
     "http-status": "^2.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^7.6.2",
+    "react-router-dom": "^7.15.1",
     "react-scripts": "5.0.1",
     "socket.io-client": "^4.8.1",
     "web-vitals": "^2.1.4"
@@ -25,6 +25,14 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^react-router-dom$": "<rootDir>/__mocks__/react-router-dom.js"
+    },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(axios|http-status)/)"
+    ]
   },
   "eslintConfig": {
     "extends": [
